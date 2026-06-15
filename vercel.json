@@ -1,11 +1,9 @@
 {
-  "buildCommand": "cd frontend && npm run build",
+  "buildCommand": "cd frontend && npm install && npm run build",
   "outputDirectory": "frontend/.next",
   "installCommand": "cd frontend && npm install",
   "framework": "nextjs",
-  "env": {
-    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "@clerk_publishable_key",
-    "CLERK_SECRET_KEY": "@clerk_secret_key",
-    "NEXT_PUBLIC_API_URL": "@api_url"
-  }
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://tu-backend.railway.app/api/:path*" }
+  ]
 }

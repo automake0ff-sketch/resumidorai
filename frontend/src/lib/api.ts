@@ -1,11 +1,5 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function getToken(): Promise<string> {
-  // En Next.js con Clerk, el token se obtiene del cliente
-  // Este helper se usa en componentes con useAuth()
-  throw new Error("Use apiClient desde componentes con useAuth");
-}
-
 export function createApiClient(token: string) {
   const headers = {
     "Content-Type": "application/json",
@@ -19,15 +13,12 @@ export function createApiClient(token: string) {
       length?: "short" | "medium" | "detailed";
       include_chapters?: boolean;
       include_key_points?: boolean;
-      include_transcript?: boolean;
     }) {
       const res = await fetch(`${API_URL}/api/summaries`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(data),
+        method: "POST", headers, body: JSON.stringify(data),
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || "Error al enviar");
       }
       return res.json();
@@ -39,11 +30,8 @@ export function createApiClient(token: string) {
       return res.json();
     },
 
-    async listSummaries(limit = 20, offset = 0) {
-      const res = await fetch(
-        `${API_URL}/api/summaries?limit=${limit}&offset=${offset}`,
-        { headers }
-      );
+    async listSummaries(page = 1, perPage = 20) {
+      const res = await fetch(`${API_URL}/api/summaries?page=${page}&per_page=${perPage}`, { headers });
       if (!res.ok) throw new Error("Error al cargar");
       return res.json();
     },
@@ -55,10 +43,7 @@ export function createApiClient(token: string) {
     },
 
     async deleteSummary(jobId: string) {
-      await fetch(`${API_URL}/api/summaries/${jobId}`, {
-        method: "DELETE",
-        headers,
-      });
+      await fetch(`${API_URL}/api/summaries/${jobId}`, { method: "DELETE", headers });
     },
   };
 }

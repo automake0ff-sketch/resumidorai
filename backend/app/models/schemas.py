@@ -1,4 +1,4 @@
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel
 from typing import Optional
 from enum import Enum
 from datetime import datetime
@@ -12,9 +12,9 @@ class JobStatus(str, Enum):
 
 
 class SummaryLength(str, Enum):
-    short = "short"        # ~150 palabras
-    medium = "medium"      # ~300 palabras
-    detailed = "detailed"  # ~600 palabras
+    short = "short"
+    medium = "medium"
+    detailed = "detailed"
 
 
 class SummaryRequest(BaseModel):
@@ -29,7 +29,6 @@ class SummaryRequest(BaseModel):
 class SummaryResponse(BaseModel):
     job_id: str
     status: JobStatus
-    created_at: datetime
 
 
 class SummaryResult(BaseModel):
@@ -45,12 +44,11 @@ class SummaryResult(BaseModel):
     transcript: Optional[str] = None
     language: str = "es"
     error: Optional[str] = None
-    created_at: datetime
-    completed_at: Optional[datetime] = None
+    created: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 class UsageStats(BaseModel):
-    user_id: str
     summaries_this_month: int
     summaries_limit: int
     plan: str
