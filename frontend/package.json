@@ -13,8 +13,9 @@
     "react": "^18",
     "react-dom": "^18",
     "@clerk/nextjs": "^5.3.5",
-    "lucide-react": "^0.383.0",
+    "@clerk/themes": "^2.1.37",
     "clsx": "^2.1.1",
+    "lucide-react": "^0.383.0",
     "tailwind-merge": "^2.4.0"
   },
   "devDependencies": {

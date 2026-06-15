@@ -2,24 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { createApiClient } from "@/lib/api";
-
-type Job = {
-  job_id: string;
-  status: "pending" | "processing" | "completed" | "failed";
-  url: string;
-  title?: string;
-  thumbnail?: string;
-  duration_seconds?: number;
-  summary?: string;
-  key_points?: string[];
-  chapters?: { start_seconds: number; title: string; summary: string }[];
-  language: string;
-  created?: string;
-  error?: string;
-};
-
-type Usage = { summaries_this_month: number; summaries_limit: number; plan: string };
+import { createApiClient, type Job, type Usage } from "@/lib/api";
 
 function fmtDuration(s?: number) {
   if (!s) return "";
@@ -43,11 +26,11 @@ function timeAgo(iso?: string) {
   return `hace ${Math.floor(h / 24)}d`;
 }
 
-const STATUS_CONFIG = {
-  pending:    { label: "En cola",      color: "#eab308", bg: "rgba(234,179,8,0.1)" },
-  processing: { label: "Procesando…",  color: "#3b82f6", bg: "rgba(59,130,246,0.1)" },
-  completed:  { label: "Listo",        color: "#22c55e", bg: "rgba(34,197,94,0.1)" },
-  failed:     { label: "Error",        color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
+const STATUS: Record<string, { label: string; color: string; bg: string }> = {
+  pending:    { label: "En cola",     color: "#eab308", bg: "rgba(234,179,8,0.12)" },
+  processing: { label: "Procesando…", color: "#3b82f6", bg: "rgba(59,130,246,0.12)" },
+  completed:  { label: "Listo",       color: "#22c55e", bg: "rgba(34,197,94,0.12)" },
+  failed:     { label: "Error",       color: "#ef4444", bg: "rgba(239,68,68,0.12)" },
 };
 
 export default function DashboardPage() {
@@ -61,43 +44,56 @@ export default function DashboardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const pollers = useRef<Record<string, NodeJS.Timeout>>({});
+  const [loading, setLoading] = useState(true);
+  const pollers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
-  const api = useCallback(async () => {
+  const getApi = useCallback(async () => {
     const token = await getToken();
-    return createApiClient(token!);
+    if (!token) throw new Error("No autenticado");
+    return createApiClient(token);
   }, [getToken]);
 
   useEffect(() => {
     loadAll();
-    return () => Object.values(pollers.current).forEach(clearInterval);
+    // capture ref value at effect time
+    const currentPollers = pollers.current;
+    return () => {
+      Object.values(currentPollers).forEach(clearInterval);
+    };
   }, []);
 
   async function loadAll() {
+    setLoading(true);
     try {
-      const client = await api();
-      const [jobsData, usageData] = await Promise.all([client.listSummaries(), client.getUsage()]);
+      const client = await getApi();
+      const [jobsData, usageData] = await Promise.all([
+        client.listSummaries(),
+        client.getUsage(),
+      ]);
       setJobs(jobsData);
       setUsage(usageData);
-      // Resume polling for unfinished jobs
-      jobsData.forEach((j: Job) => {
+      jobsData.forEach((j) => {
         if (j.status === "pending" || j.status === "processing") startPolling(j.job_id);
       });
-    } catch { /* silent */ }
+    } catch (e) {
+      console.error("Error cargando datos:", e);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function startPolling(jobId: string) {
     if (pollers.current[jobId]) return;
     pollers.current[jobId] = setInterval(async () => {
       try {
-        const client = await api();
+        const client = await getApi();
         const updated = await client.getSummary(jobId);
-        setJobs(prev => prev.map(j => j.job_id === jobId ? updated : j));
+        setJobs((prev) => prev.map((j) => (j.job_id === jobId ? updated : j)));
         if (updated.status === "completed" || updated.status === "failed") {
           clearInterval(pollers.current[jobId]);
           delete pollers.current[jobId];
-          setSelected(prev => prev?.job_id === jobId ? updated : prev);
-          const client2 = await api();
+          setSelected((prev) => (prev?.job_id === jobId ? updated : prev));
+          const client2 = await getApi();
           setUsage(await client2.getUsage());
         }
       } catch {
@@ -112,13 +108,17 @@ export default function DashboardPage() {
     setSubmitting(true);
     setError("");
     try {
-      const client = await api();
-      const job = await client.submitSummary({ url: url.trim(), language, length, include_chapters: true, include_key_points: true });
-      setJobs(prev => [job, ...prev]);
+      const client = await getApi();
+      const job = await client.submitSummary({
+        url: url.trim(), language, length,
+        include_chapters: true, include_key_points: true,
+      });
+      const newJob: Job = { ...job, url: url.trim(), language, status: "pending" as const };
+      setJobs((prev) => [newJob, ...prev]);
       setUrl("");
       startPolling(job.job_id);
-    } catch (e: any) {
-      setError(e.message || "Error al enviar");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error al enviar");
     } finally {
       setSubmitting(false);
     }
@@ -126,15 +126,30 @@ export default function DashboardPage() {
 
   async function deleteJob(jobId: string, e: React.MouseEvent) {
     e.stopPropagation();
-    const client = await api();
-    await client.deleteSummary(jobId);
-    setJobs(prev => prev.filter(j => j.job_id !== jobId));
-    if (selected?.job_id === jobId) setSelected(null);
+    try {
+      const client = await getApi();
+      await client.deleteSummary(jobId);
+      setJobs((prev) => prev.filter((j) => j.job_id !== jobId));
+      if (selected?.job_id === jobId) setSelected(null);
+      clearInterval(pollers.current[jobId]);
+      delete pollers.current[jobId];
+    } catch {}
   }
 
   function copySummary() {
     if (!selected?.summary) return;
-    navigator.clipboard.writeText(selected.summary);
+    navigator.clipboard.writeText(
+      [
+        selected.title,
+        "",
+        "RESUMEN",
+        selected.summary,
+        "",
+        selected.key_points?.length
+          ? "PUNTOS CLAVE\n" + selected.key_points.map((p) => `• ${p}`).join("\n")
+          : "",
+      ].join("\n").trim()
+    );
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -148,198 +163,257 @@ export default function DashboardPage() {
       {usage && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#111", border: "1px solid #1a1a1a", borderRadius: 10, padding: "12px 16px", marginBottom: 20 }}>
           <div>
-            <span style={{ fontSize: 12, color: "#555", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600 }}>Plan {usage.plan}</span>
-            <p style={{ fontSize: 14, fontWeight: 500, marginTop: 2, color: pct > 80 ? "#ef4444" : "#f5f5f5" }}>
+            <span style={{ fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 600 }}>Plan {usage.plan}</span>
+            <p style={{ fontSize: 14, fontWeight: 500, marginTop: 2, color: pct > 80 ? "#ef4444" : "#e5e5e5" }}>
               {usage.summaries_this_month} / {usage.summaries_limit} resúmenes este mes
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 120, height: 4, background: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
-              <div style={{ height: "100%", borderRadius: 2, background: pct > 80 ? "#ef4444" : "#22c55e", width: `${pct}%`, transition: "width 0.5s" }} />
+              <div style={{ height: "100%", borderRadius: 2, background: pct > 80 ? "#ef4444" : "#22c55e", width: `${pct}%`, transition: "width 0.5s ease" }} />
             </div>
             {atLimit && (
-              <a href="/pricing" style={{ fontSize: 12, padding: "5px 12px", background: "#22c55e", color: "#000", borderRadius: 6, fontWeight: 600, textDecoration: "none" }}>Actualizar</a>
+              <a href="/pricing" style={{ fontSize: 12, padding: "5px 12px", background: "#22c55e", color: "#000", borderRadius: 6, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+                Actualizar
+              </a>
             )}
           </div>
         </div>
       )}
 
       {/* Submit form */}
-      <div style={{ background: "#111", border: "1px solid #1a1a1a", borderRadius: 12, padding: "1.5rem", marginBottom: 24 }}>
+      <div style={{ background: "#111", border: "1px solid #1a1a1a", borderRadius: 12, padding: "1.5rem", marginBottom: 20 }}>
         <p style={{ fontSize: 13, color: "#555", marginBottom: 12 }}>Pega la URL de un video de YouTube</p>
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <input
             type="url"
             placeholder="https://youtube.com/watch?v=..."
             value={url}
-            onChange={e => setUrl(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && !submitting && submit()}
-            style={{ flex: 1, background: "#0d0d0d", border: "1px solid #222", borderRadius: 8, color: "#f5f5f5", fontSize: 14, padding: "10px 14px", outline: "none", fontFamily: "inherit" }}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !submitting && !atLimit && submit()}
             disabled={atLimit}
+            style={{
+              flex: 1, background: "#0d0d0d", border: "1px solid #222", borderRadius: 8,
+              color: "#f5f5f5", fontSize: 14, padding: "10px 14px", outline: "none", fontFamily: "inherit",
+              transition: "border-color 0.15s",
+            }}
           />
           <button
             onClick={submit}
             disabled={submitting || !url.trim() || atLimit}
-            style={{ background: "#22c55e", color: "#000", border: "none", borderRadius: 8, padding: "10px 20px", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: (submitting || !url.trim() || atLimit) ? 0.5 : 1, whiteSpace: "nowrap", fontFamily: "inherit" }}
+            style={{
+              background: "#22c55e", color: "#000", border: "none", borderRadius: 8,
+              padding: "10px 20px", fontWeight: 600, fontSize: 14, cursor: "pointer",
+              opacity: submitting || !url.trim() || atLimit ? 0.5 : 1,
+              whiteSpace: "nowrap", fontFamily: "inherit", transition: "opacity 0.15s",
+            }}
           >
             {submitting ? "Enviando…" : "Resumir →"}
           </button>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <select value={language} onChange={e => setLanguage(e.target.value)}
-            style={{ background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#aaa", fontSize: 13, padding: "7px 10px", outline: "none", fontFamily: "inherit" }}>
-            <option value="es">🇪🇸 Español</option>
-            <option value="en">🇬🇧 English</option>
-            <option value="fr">🇫🇷 Français</option>
-            <option value="pt">🇵🇹 Português</option>
-            <option value="de">🇩🇪 Deutsch</option>
-          </select>
-          <select value={length} onChange={e => setLength(e.target.value as any)}
-            style={{ background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#aaa", fontSize: 13, padding: "7px 10px", outline: "none", fontFamily: "inherit" }}>
-            <option value="short">Corto ~150 palabras</option>
-            <option value="medium">Medio ~300 palabras</option>
-            <option value="detailed">Detallado ~600 palabras</option>
-          </select>
-        </div>
-        {error && <p style={{ color: "#ef4444", fontSize: 13, marginTop: 10 }}>{error}</p>}
-        {atLimit && <p style={{ color: "#eab308", fontSize: 13, marginTop: 10 }}>Has alcanzado el límite de tu plan. <a href="/pricing" style={{ color: "#22c55e" }}>Actualiza aquí</a></p>}
-      </div>
-
-      {/* Two-column layout: list + detail */}
-      <div style={{ display: "grid", gridTemplateColumns: selected ? "320px 1fr" : "1fr", gap: 16, alignItems: "start" }}>
-
-        {/* Job list */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {jobs.length === 0 && (
-            <div style={{ textAlign: "center", padding: "4rem 2rem", color: "#555" }}>
-              <p style={{ fontSize: 32, marginBottom: 12 }}>🎬</p>
-              <p style={{ fontSize: 14 }}>Aún no tienes resúmenes.<br />¡Pega una URL arriba para empezar!</p>
-            </div>
-          )}
-          {jobs.map(job => {
-            const st = STATUS_CONFIG[job.status];
-            const isActive = selected?.job_id === job.job_id;
-            return (
-              <div
-                key={job.job_id}
-                onClick={() => job.status === "completed" && setSelected(isActive ? null : job)}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {(["es", "en", "fr", "pt", "de"] as const).map((lang) => (
+            <button
+              key={lang}
+              onClick={() => setLanguage(lang)}
+              style={{
+                background: language === lang ? "#1a2a1a" : "transparent",
+                border: `1px solid ${language === lang ? "#22c55e" : "#222"}`,
+                color: language === lang ? "#22c55e" : "#666",
+                borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              {{ es: "🇪🇸 ES", en: "🇬🇧 EN", fr: "🇫🇷 FR", pt: "🇵🇹 PT", de: "🇩🇪 DE" }[lang]}
+            </button>
+          ))}
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            {(["short", "medium", "detailed"] as const).map((l) => (
+              <button
+                key={l}
+                onClick={() => setLength(l)}
                 style={{
-                  background: isActive ? "#0d1f17" : "#111",
-                  border: `1px solid ${isActive ? "#22c55e" : "#1a1a1a"}`,
-                  borderRadius: 10,
-                  padding: "12px 14px",
-                  cursor: job.status === "completed" ? "pointer" : "default",
-                  transition: "all 0.15s",
+                  background: length === l ? "#1a2a1a" : "transparent",
+                  border: `1px solid ${length === l ? "#22c55e" : "#222"}`,
+                  color: length === l ? "#22c55e" : "#666",
+                  borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
                 }}
               >
-                <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                  {job.thumbnail && (
-                    <img src={job.thumbnail} alt="" style={{ width: 64, height: 42, objectFit: "cover", borderRadius: 5, flexShrink: 0 }} />
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: st.color, background: st.bg, padding: "2px 7px", borderRadius: 4 }}>{st.label}</span>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 11, color: "#555" }}>{timeAgo(job.created)}</span>
-                        <button onClick={e => deleteJob(job.job_id, e)} style={{ background: "transparent", border: "none", color: "#444", fontSize: 14, cursor: "pointer", padding: "0 2px", lineHeight: 1 }}>×</button>
-                      </div>
-                    </div>
-                    <p style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#e5e5e5" }}>
-                      {job.title || job.url}
-                    </p>
-                    {job.duration_seconds && (
-                      <p style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{fmtDuration(job.duration_seconds)}</p>
-                    )}
-                    {job.status === "failed" && (
-                      <p style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>{job.error}</p>
-                    )}
-                    {(job.status === "pending" || job.status === "processing") && (
-                      <div style={{ marginTop: 6, height: 2, background: "#1a1a1a", borderRadius: 1, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: "40%", background: "#3b82f6", borderRadius: 1, animation: "pulse 1.5s infinite" }} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Detail panel */}
-        {selected && (
-          <div style={{ background: "#111", border: "1px solid #1a1a1a", borderRadius: 12, padding: "1.5rem", position: "sticky", top: 72 }}>
-            {/* Header */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-              <div style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
-                <p style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.4 }}>{selected.title}</p>
-                {selected.duration_seconds && (
-                  <p style={{ fontSize: 12, color: "#555", marginTop: 4 }}>{fmtDuration(selected.duration_seconds)}</p>
-                )}
-              </div>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button onClick={copySummary} style={{ background: "#1a1a1a", border: "1px solid #222", color: "#aaa", borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-                  {copied ? "✓ Copiado" : "Copiar"}
-                </button>
-                <button onClick={() => setSelected(null)} style={{ background: "transparent", border: "1px solid #222", color: "#666", borderRadius: 6, padding: "6px 10px", fontSize: 16, cursor: "pointer", lineHeight: 1 }}>×</button>
-              </div>
-            </div>
-
-            {/* Summary */}
-            {selected.summary && (
-              <div style={{ marginBottom: 20 }}>
-                <p style={{ fontSize: 11, color: "#22c55e", fontWeight: 700, letterSpacing: "0.08em", marginBottom: 10 }}>RESUMEN</p>
-                <p style={{ fontSize: 14, color: "#bbb", lineHeight: 1.75 }}>{selected.summary}</p>
-              </div>
-            )}
-
-            {/* Key points */}
-            {selected.key_points && selected.key_points.length > 0 && (
-              <div style={{ marginBottom: 20 }}>
-                <p style={{ fontSize: 11, color: "#22c55e", fontWeight: 700, letterSpacing: "0.08em", marginBottom: 10 }}>PUNTOS CLAVE</p>
-                <ul style={{ listStyle: "none" }}>
-                  {selected.key_points.map((pt, i) => (
-                    <li key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-start" }}>
-                      <span style={{ color: "#22c55e", flexShrink: 0, marginTop: 1, fontSize: 13 }}>✓</span>
-                      <span style={{ fontSize: 13, color: "#aaa", lineHeight: 1.6 }}>{pt}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Chapters */}
-            {selected.chapters && selected.chapters.length > 0 && (
-              <div>
-                <p style={{ fontSize: 11, color: "#22c55e", fontWeight: 700, letterSpacing: "0.08em", marginBottom: 10 }}>CAPÍTULOS</p>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {selected.chapters.map((ch, i) => (
-                    <div key={i} style={{ display: "flex", gap: 10 }}>
-                      <span style={{ fontSize: 11, color: "#555", fontFamily: "monospace", minWidth: 38, marginTop: 1 }}>{fmtTime(ch.start_seconds)}</span>
-                      <div>
-                        <p style={{ fontSize: 13, fontWeight: 500, color: "#e5e5e5", marginBottom: 2 }}>{ch.title}</p>
-                        <p style={{ fontSize: 12, color: "#666", lineHeight: 1.5 }}>{ch.summary}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Source link */}
-            <div style={{ marginTop: 20, paddingTop: 20, borderTop: "1px solid #1a1a1a" }}>
-              <a href={selected.url} target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: 12, color: "#555", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
-                ↗ Ver video original
-              </a>
-            </div>
+                {{ short: "Corto", medium: "Medio", detailed: "Detallado" }[l]}
+              </button>
+            ))}
           </div>
+        </div>
+        {error && (
+          <p style={{ color: "#ef4444", fontSize: 13, marginTop: 10, padding: "8px 12px", background: "rgba(239,68,68,0.08)", borderRadius: 6 }}>
+            ⚠ {error}
+          </p>
+        )}
+        {atLimit && (
+          <p style={{ color: "#eab308", fontSize: 13, marginTop: 10 }}>
+            Límite alcanzado. <a href="/pricing" style={{ color: "#22c55e", textDecoration: "underline" }}>Actualiza tu plan</a>
+          </p>
         )}
       </div>
 
+      {/* Main content */}
+      {loading ? (
+        <div style={{ textAlign: "center", padding: "4rem", color: "#555" }}>
+          <div style={{ width: 24, height: 24, border: "2px solid #333", borderTopColor: "#22c55e", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 12px" }} />
+          <p style={{ fontSize: 14 }}>Cargando resúmenes…</p>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: selected ? "minmax(280px, 340px) 1fr" : "1fr", gap: 16, alignItems: "start" }}>
+
+          {/* Job list */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {jobs.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "5rem 2rem", color: "#444" }}>
+                <p style={{ fontSize: 40, marginBottom: 16 }}>🎬</p>
+                <p style={{ fontSize: 15, fontWeight: 500, marginBottom: 8, color: "#666" }}>Sin resúmenes todavía</p>
+                <p style={{ fontSize: 13, lineHeight: 1.6 }}>Pega una URL de YouTube arriba<br />y empieza a resumir en segundos</p>
+              </div>
+            ) : jobs.map((job) => {
+              const st = STATUS[job.status] || STATUS.pending;
+              const isActive = selected?.job_id === job.job_id;
+              return (
+                <div
+                  key={job.job_id}
+                  onClick={() => job.status === "completed" && setSelected(isActive ? null : job)}
+                  style={{
+                    background: isActive ? "#0d1f17" : "#111",
+                    border: `1px solid ${isActive ? "#22c55e" : "#1a1a1a"}`,
+                    borderRadius: 10, padding: "12px 14px",
+                    cursor: job.status === "completed" ? "pointer" : "default",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    {job.thumbnail && (
+                      <img src={job.thumbnail} alt="" style={{ width: 68, height: 44, objectFit: "cover", borderRadius: 5, flexShrink: 0 }} />
+                    )}
+                    {!job.thumbnail && (
+                      <div style={{ width: 68, height: 44, background: "#1a1a1a", borderRadius: 5, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>🎬</div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: st.color, background: st.bg, padding: "2px 7px", borderRadius: 4 }}>
+                          {st.label}
+                        </span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 11, color: "#444" }}>{timeAgo(job.created)}</span>
+                          <button
+                            onClick={(e) => deleteJob(job.job_id, e)}
+                            style={{ background: "transparent", border: "none", color: "#444", fontSize: 16, cursor: "pointer", padding: "0 2px", lineHeight: 1, fontFamily: "inherit" }}
+                            title="Eliminar"
+                          >×</button>
+                        </div>
+                      </div>
+                      <p style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#e0e0e0", marginBottom: 2 }}>
+                        {job.title || new URL(job.url).hostname}
+                      </p>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        {job.duration_seconds && (
+                          <span style={{ fontSize: 11, color: "#444" }}>{fmtDuration(job.duration_seconds)}</span>
+                        )}
+                        <span style={{ fontSize: 11, color: "#444" }}>{job.language.toUpperCase()}</span>
+                      </div>
+                      {job.status === "failed" && (
+                        <p style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>{job.error}</p>
+                      )}
+                      {(job.status === "pending" || job.status === "processing") && (
+                        <div style={{ marginTop: 8, height: 2, background: "#1a1a1a", borderRadius: 1, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: "30%", background: "#3b82f6", borderRadius: 1, animation: "shimmer 1.5s ease-in-out infinite" }} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Detail panel */}
+          {selected && (
+            <div style={{ background: "#111", border: "1px solid #1a1a1a", borderRadius: 12, padding: "1.5rem", position: "sticky", top: 72, maxHeight: "calc(100vh - 100px)", overflowY: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+                <div style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
+                  <p style={{ fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: "#f0f0f0" }}>{selected.title}</p>
+                  <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                    {selected.duration_seconds && <span style={{ fontSize: 12, color: "#555" }}>{fmtDuration(selected.duration_seconds)}</span>}
+                    <span style={{ fontSize: 12, color: "#555" }}>{selected.language.toUpperCase()}</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button
+                    onClick={copySummary}
+                    style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: copied ? "#22c55e" : "#888", borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", transition: "color 0.2s" }}
+                  >
+                    {copied ? "✓ Copiado" : "Copiar"}
+                  </button>
+                  <button
+                    onClick={() => setSelected(null)}
+                    style={{ background: "transparent", border: "1px solid #222", color: "#555", borderRadius: 6, padding: "6px 10px", fontSize: 18, cursor: "pointer", lineHeight: 1, fontFamily: "inherit" }}
+                  >×</button>
+                </div>
+              </div>
+
+              {/* Summary */}
+              {selected.summary && (
+                <section style={{ marginBottom: 24 }}>
+                  <p style={{ fontSize: 10, color: "#22c55e", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10 }}>RESUMEN</p>
+                  <p style={{ fontSize: 14, color: "#b0b0b0", lineHeight: 1.8 }}>{selected.summary}</p>
+                </section>
+              )}
+
+              {/* Key points */}
+              {selected.key_points && selected.key_points.length > 0 && (
+                <section style={{ marginBottom: 24 }}>
+                  <p style={{ fontSize: 10, color: "#22c55e", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10 }}>PUNTOS CLAVE</p>
+                  <ul style={{ listStyle: "none" }}>
+                    {selected.key_points.map((pt, i) => (
+                      <li key={i} style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "flex-start" }}>
+                        <span style={{ color: "#22c55e", flexShrink: 0, marginTop: 2, fontSize: 12 }}>✓</span>
+                        <span style={{ fontSize: 13, color: "#999", lineHeight: 1.65 }}>{pt}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {/* Chapters */}
+              {selected.chapters && selected.chapters.length > 0 && (
+                <section style={{ marginBottom: 20 }}>
+                  <p style={{ fontSize: 10, color: "#22c55e", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10 }}>CAPÍTULOS</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {selected.chapters.map((ch, i) => (
+                      <div key={i} style={{ display: "flex", gap: 12 }}>
+                        <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace", minWidth: 40, paddingTop: 1 }}>{fmtTime(ch.start_seconds)}</span>
+                        <div>
+                          <p style={{ fontSize: 13, fontWeight: 500, color: "#d0d0d0", marginBottom: 2 }}>{ch.title}</p>
+                          <p style={{ fontSize: 12, color: "#666", lineHeight: 1.55 }}>{ch.summary}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              <div style={{ borderTop: "1px solid #1a1a1a", paddingTop: 16, marginTop: 4 }}>
+                <a href={selected.url} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 12, color: "#444", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  ↗ Ver en YouTube
+                </a>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <style>{`
-        @keyframes pulse {
-          0%, 100% { transform: translateX(-100%); }
-          50% { transform: translateX(250%); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes shimmer {
+          0% { transform: translateX(-200%); }
+          100% { transform: translateX(500%); }
         }
       `}</style>
     </div>

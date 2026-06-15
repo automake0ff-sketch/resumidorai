@@ -1,10 +1,16 @@
 import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 from app.api import summaries, webhooks, health
 from app.db.pocketbase import init_pocketbase
@@ -21,9 +27,11 @@ app = FastAPI(
     description="Resume videos de YouTube con IA",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url=None,
 )
 
-origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")]
 
 app.add_middleware(
     CORSMiddleware,

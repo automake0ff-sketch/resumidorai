@@ -1,51 +1,70 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export function createApiClient(token: string) {
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token}`,
   };
 
+  async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+    if (!res.ok) {
+      let detail = `Error ${res.status}`;
+      try {
+        const body = await res.json();
+        detail = body.detail || detail;
+      } catch {}
+      throw new Error(detail);
+    }
+    // 204 No Content
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  }
+
   return {
-    async submitSummary(data: {
+    submitSummary: (data: {
       url: string;
       language?: string;
       length?: "short" | "medium" | "detailed";
       include_chapters?: boolean;
       include_key_points?: boolean;
-    }) {
-      const res = await fetch(`${API_URL}/api/summaries`, {
-        method: "POST", headers, body: JSON.stringify(data),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Error al enviar");
-      }
-      return res.json();
-    },
+    }) =>
+      request<{ job_id: string; status: string }>("/api/summaries", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
 
-    async getSummary(jobId: string) {
-      const res = await fetch(`${API_URL}/api/summaries/${jobId}`, { headers });
-      if (!res.ok) throw new Error("No encontrado");
-      return res.json();
-    },
+    getSummary: (jobId: string) =>
+      request<Job>(`/api/summaries/${jobId}`),
 
-    async listSummaries(page = 1, perPage = 20) {
-      const res = await fetch(`${API_URL}/api/summaries?page=${page}&per_page=${perPage}`, { headers });
-      if (!res.ok) throw new Error("Error al cargar");
-      return res.json();
-    },
+    listSummaries: (page = 1, perPage = 20) =>
+      request<Job[]>(`/api/summaries?page=${page}&per_page=${perPage}`),
 
-    async getUsage() {
-      const res = await fetch(`${API_URL}/api/summaries/usage/me`, { headers });
-      if (!res.ok) throw new Error("Error");
-      return res.json();
-    },
+    getUsage: () =>
+      request<Usage>("/api/summaries/usage/me"),
 
-    async deleteSummary(jobId: string) {
-      await fetch(`${API_URL}/api/summaries/${jobId}`, { method: "DELETE", headers });
-    },
+    deleteSummary: (jobId: string) =>
+      request<void>(`/api/summaries/${jobId}`, { method: "DELETE" }),
   };
 }
 
-export type ApiClient = ReturnType<typeof createApiClient>;
+export type Job = {
+  job_id: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  url: string;
+  title?: string;
+  thumbnail?: string;
+  duration_seconds?: number;
+  summary?: string;
+  key_points?: string[];
+  chapters?: { start_seconds: number; title: string; summary: string }[];
+  language: string;
+  created?: string;
+  error?: string;
+};
+
+export type Usage = {
+  summaries_this_month: number;
+  summaries_limit: number;
+  plan: string;
+};
