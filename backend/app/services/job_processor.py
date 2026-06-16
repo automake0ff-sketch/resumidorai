@@ -14,6 +14,11 @@ orchestrator = VideoSummaryOrchestrator()
 PLAN_LIMITS = {"free": 5, "starter": 50, "pro": 200, "unlimited": 99999}
 
 
+def _esc(value: str) -> str:
+    """Escapa comillas para uso seguro en filtros de PocketBase."""
+    return value.replace('"', '\\"')
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -97,7 +102,7 @@ async def _increment_usage(clerk_user_id: str):
     month_key = f"{now.year}-{now.month:02d}"
     existing = await pb_get_first(
         "user_usage",
-        f'clerk_user_id="{clerk_user_id}"&&month="{month_key}"',
+        f'clerk_user_id="{_esc(clerk_user_id)}"&&month="{month_key}"',
     )
     if existing:
         await pb_update("user_usage", existing["id"], {"count": existing.get("count", 0) + 1})
@@ -115,7 +120,7 @@ async def get_job(job_id: str, clerk_user_id: str) -> dict | None:
 async def get_user_jobs(clerk_user_id: str, page: int = 1, per_page: int = 20) -> list[dict]:
     result = await pb_list(
         "summary_jobs",
-        filter=f'clerk_user_id="{clerk_user_id}"',
+        filter=f'clerk_user_id="{_esc(clerk_user_id)}"',
         sort="-created",
         page=page,
         per_page=per_page,
@@ -124,14 +129,14 @@ async def get_user_jobs(clerk_user_id: str, page: int = 1, per_page: int = 20) -
 
 
 async def get_usage(clerk_user_id: str) -> dict:
-    profile = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}"')
+    profile = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
     plan = profile.get("plan", "free") if profile else "free"
 
     now = datetime.now(timezone.utc)
     month_key = f"{now.year}-{now.month:02d}"
     usage_record = await pb_get_first(
         "user_usage",
-        f'clerk_user_id="{clerk_user_id}"&&month="{month_key}"',
+        f'clerk_user_id="{_esc(clerk_user_id)}"&&month="{month_key}"',
     )
     count = usage_record.get("count", 0) if usage_record else 0
 
@@ -152,7 +157,7 @@ async def delete_job(job_id: str, clerk_user_id: str) -> bool:
 
 async def ensure_user_profile(clerk_user_id: str, email: str = "", name: str = ""):
     """Create user profile if it doesn't exist (fallback for webhook failures)."""
-    existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}"')
+    existing = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
     if not existing:
         await pb_create("user_profiles", {
             "clerk_user_id": clerk_user_id,

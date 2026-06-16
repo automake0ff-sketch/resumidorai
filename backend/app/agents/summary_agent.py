@@ -8,8 +8,15 @@ from app.prompts.prompts import (
     CHAPTER_DETECTOR_PROMPT,
 )
 
-client = anthropic.Anthropic()
+client = None
 MODEL = "claude-sonnet-4-6"
+
+
+def get_client() -> anthropic.Anthropic:
+    global client
+    if client is None:
+        client = anthropic.Anthropic()
+    return client
 
 LANGUAGE_NAMES = {
     "es": "español", "en": "English", "fr": "français",
@@ -21,7 +28,7 @@ class TranscriptCleanerAgent:
     async def run(self, raw_transcript: str) -> str:
         if len(raw_transcript) < 100:
             return raw_transcript
-        msg = client.messages.create(
+        msg = get_client().messages.create(
             model=MODEL, max_tokens=4096,
             messages=[{"role": "user", "content": TRANSCRIPT_CLEANER_PROMPT.format(
                 raw_transcript=raw_transcript[:12000]
@@ -37,7 +44,7 @@ class SummaryGeneratorAgent:
         h, m2 = divmod(m, 60)
         duration_str = f"{h}h {m2}m" if h else f"{m}m {s}s"
 
-        msg = client.messages.create(
+        msg = get_client().messages.create(
             model=MODEL, max_tokens=2048,
             messages=[{"role": "user", "content": SUMMARY_GENERATOR_PROMPT.format(
                 title=title, duration=duration_str, language=language,
@@ -51,7 +58,7 @@ class SummaryGeneratorAgent:
 
 class KeyPointsAgent:
     async def run(self, transcript: str, title: str, language: str = "es") -> list[str]:
-        msg = client.messages.create(
+        msg = get_client().messages.create(
             model=MODEL, max_tokens=1024,
             messages=[{"role": "user", "content": KEY_POINTS_PROMPT.format(
                 title=title, transcript=transcript[:8000],
@@ -66,7 +73,7 @@ class KeyPointsAgent:
 
 class ChapterDetectorAgent:
     async def run(self, transcript_with_timestamps: str, title: str, language: str = "es") -> list[dict]:
-        msg = client.messages.create(
+        msg = get_client().messages.create(
             model=MODEL, max_tokens=2048,
             messages=[{"role": "user", "content": CHAPTER_DETECTOR_PROMPT.format(
                 title=title,

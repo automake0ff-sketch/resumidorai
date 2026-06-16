@@ -9,12 +9,19 @@ export function createApiClient(token: string) {
   async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const res = await fetch(`${API_URL}${path}`, { ...options, headers });
     if (!res.ok) {
-      let detail = `Error ${res.status}`;
+      let message = `Error ${res.status}`;
       try {
         const body = await res.json();
-        detail = body.detail || detail;
-      } catch {}
-      throw new Error(detail);
+        if (typeof body.detail === "string") {
+          message = body.detail;
+        } else if (Array.isArray(body.detail)) {
+          // FastAPI/Pydantic 422 validation error format
+          message = body.detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join(". ") || message;
+        }
+      } catch {
+        // response wasn't JSON, keep default message
+      }
+      throw new Error(message);
     }
     // 204 No Content
     if (res.status === 204) return undefined as T;

@@ -104,16 +104,24 @@ export default function DashboardPage() {
   }
 
   async function submit() {
-    if (!url.trim()) return;
+    const trimmed = url.trim();
+    if (!trimmed) return;
+
+    const isYouTube = /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)[\w-]{11}/.test(trimmed);
+    if (!isYouTube) {
+      setError("Pega una URL válida de YouTube (youtube.com o youtu.be)");
+      return;
+    }
+
     setSubmitting(true);
     setError("");
     try {
       const client = await getApi();
       const job = await client.submitSummary({
-        url: url.trim(), language, length,
+        url: trimmed, language, length,
         include_chapters: true, include_key_points: true,
       });
-      const newJob: Job = { ...job, url: url.trim(), language, status: "pending" as const };
+      const newJob: Job = { ...job, url: trimmed, language, status: "pending" as const };
       setJobs((prev) => [newJob, ...prev]);
       setUrl("");
       startPolling(job.job_id);

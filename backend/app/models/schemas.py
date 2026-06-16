@@ -1,7 +1,11 @@
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, field_validator
 from typing import Optional
 from enum import Enum
-from datetime import datetime
+
+YOUTUBE_URL_PATTERN = re.compile(
+    r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/)|youtu\.be/)[\w-]{11}"
+)
 
 
 class JobStatus(str, Enum):
@@ -17,6 +21,9 @@ class SummaryLength(str, Enum):
     detailed = "detailed"
 
 
+SUPPORTED_LANGUAGES = {"es", "en", "fr", "pt", "de", "it"}
+
+
 class SummaryRequest(BaseModel):
     url: str
     language: str = "es"
@@ -24,6 +31,22 @@ class SummaryRequest(BaseModel):
     include_chapters: bool = True
     include_key_points: bool = True
     include_transcript: bool = False
+
+    @field_validator("url")
+    @classmethod
+    def validate_youtube_url(cls, v: str) -> str:
+        v = v.strip()
+        if not YOUTUBE_URL_PATTERN.search(v):
+            raise ValueError("Debe ser una URL válida de YouTube (youtube.com o youtu.be)")
+        return v
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: str) -> str:
+        v = v.lower().strip()
+        if v not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Idioma no soportado. Usa uno de: {', '.join(sorted(SUPPORTED_LANGUAGES))}")
+        return v
 
 
 class SummaryResponse(BaseModel):

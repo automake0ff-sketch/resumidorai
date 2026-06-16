@@ -1,27 +1,34 @@
 """
-Script para crear las colecciones de PocketBase.
-Ejecutar una sola vez: python setup_pocketbase.py
+Script para crear las colecciones de PocketBase a partir de pocketbase_schema.json.
 
-PocketBase Collections:
-- users_profiles  → info del usuario + plan
-- summary_jobs    → trabajos de resumen
-- user_usage      → contador mensual
+Uso:
+    python setup_pocketbase.py
+
+Alternativa sin terminal:
+    Admin UI -> Settings -> Import collections -> sube pocketbase_schema.json directamente.
+
+Este script hace lo mismo via API, util para CI/CD o despliegues automatizados.
 """
 
 import asyncio
-import httpx
+import json
 import os
+from pathlib import Path
+
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
-PB_URL = os.environ.get("POCKETBASE_URL", "http://localhost:8090")
+PB_URL = os.environ.get("POCKETBASE_URL", "http://localhost:8090").rstrip("/")
 ADMIN_EMAIL = os.environ.get("POCKETBASE_ADMIN_EMAIL", "admin@resumidorai.com")
 ADMIN_PASSWORD = os.environ.get("POCKETBASE_ADMIN_PASSWORD", "change_me")
 
+SCHEMA_FILE = Path(__file__).parent.parent / "pocketbase_schema.json"
+
 
 async def get_admin_token() -> str:
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{PB_URL}/api/admins/auth-with-password",
             json={"identity": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
@@ -30,82 +37,54 @@ async def get_admin_token() -> str:
         return resp.json()["token"]
 
 
-async def create_collection(token: str, schema: dict):
-    headers = {"Authorization": token}
-    async with httpx.AsyncClient() as client:
+async def get_existing_collections(token: str) -> set:
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{PB_URL}/api/collections",
+            params={"perPage": 200},
+            headers={"Authorization": token},
+        )
+        resp.raise_for_status()
+        return {c["name"] for c in resp.json().get("items", [])}
+
+
+async def create_collection(token: str, schema: dict, existing: set):
+    if schema["name"] in existing:
+        print(f"  already exists, skipping: {schema['name']}")
+        return
+
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{PB_URL}/api/collections",
             json=schema,
-            headers=headers,
+            headers={"Authorization": token},
         )
-        if resp.status_code == 400 and "already exists" in resp.text:
-            print(f"  ⚠️  '{schema['name']}' ya existe, omitiendo")
+        if resp.status_code >= 400:
+            print(f"  ERROR creating '{schema['name']}': {resp.text}")
             return
-        resp.raise_for_status()
-        print(f"  ✅ Colección '{schema['name']}' creada")
+        print(f"  OK created: {schema['name']}")
 
 
 async def main():
-    print("🚀 Configurando PocketBase para ResumidorAI...")
-    token = await get_admin_token()
-    print("✅ Admin autenticado")
+    print("Configurando PocketBase para ResumidorAI...")
+    print(f"  URL: {PB_URL}")
+    print(f"  Schema: {SCHEMA_FILE}")
 
-    collections = [
-        {
-            "name": "user_profiles",
-            "type": "base",
-            "schema": [
-                {"name": "clerk_user_id", "type": "text", "required": True},
-                {"name": "email", "type": "email", "required": True},
-                {"name": "name", "type": "text"},
-                {"name": "plan", "type": "select", "required": True,
-                 "options": {"values": ["free", "starter", "pro", "unlimited"]},
-                 "default": "free"},
-                {"name": "stripe_customer_id", "type": "text"},
-            ],
-        },
-        {
-            "name": "summary_jobs",
-            "type": "base",
-            "schema": [
-                {"name": "clerk_user_id", "type": "text", "required": True},
-                {"name": "url", "type": "url", "required": True},
-                {"name": "language", "type": "text", "default": "es"},
-                {"name": "length", "type": "select",
-                 "options": {"values": ["short", "medium", "detailed"]}},
-                {"name": "include_chapters", "type": "bool", "default": True},
-                {"name": "include_key_points", "type": "bool", "default": True},
-                {"name": "include_transcript", "type": "bool", "default": False},
-                {"name": "status", "type": "select", "required": True,
-                 "options": {"values": ["pending", "processing", "completed", "failed"]}},
-                {"name": "title", "type": "text"},
-                {"name": "thumbnail", "type": "url"},
-                {"name": "duration_seconds", "type": "number"},
-                {"name": "summary", "type": "editor"},
-                {"name": "key_points", "type": "json"},
-                {"name": "chapters", "type": "json"},
-                {"name": "transcript", "type": "editor"},
-                {"name": "error", "type": "text"},
-                {"name": "started_at", "type": "date"},
-                {"name": "completed_at", "type": "date"},
-            ],
-        },
-        {
-            "name": "user_usage",
-            "type": "base",
-            "schema": [
-                {"name": "clerk_user_id", "type": "text", "required": True},
-                {"name": "month", "type": "text", "required": True},
-                {"name": "count", "type": "number", "default": 0},
-            ],
-        },
-    ]
+    if not SCHEMA_FILE.exists():
+        print(f"ERROR: no se encontro {SCHEMA_FILE}")
+        return
+
+    collections = json.loads(SCHEMA_FILE.read_text())
+
+    token = await get_admin_token()
+    print("Admin autenticado")
+
+    existing = await get_existing_collections(token)
 
     for col in collections:
-        await create_collection(token, col)
+        await create_collection(token, col, existing)
 
-    print("\n✅ PocketBase configurado correctamente")
-    print(f"   Admin UI: {PB_URL}/_/")
+    print(f"\nListo. Admin UI: {PB_URL}/_/")
 
 
 if __name__ == "__main__":
