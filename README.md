@@ -116,6 +116,12 @@ NEXT_PUBLIC_API_URL=https://tu-backend.railway.app
 
 Redeploy (Deployments → ⋯ → Redeploy) después de cambiar el Root Directory o las env vars.
 
+> ⚠️ **Error `MIDDLEWARE_INVOCATION_FAILED` / `Missing publishableKey`**: significa que `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` no llegó al middleware en runtime. Pasos para resolverlo:
+> 1. Confirma que las 7 variables están en **Settings → Environment Variables**, no solo guardadas como borrador.
+> 2. Verifica que estén marcadas para el environment correcto: si el deploy que falla es de producción (rama `main`), la variable debe tener tickado **Production** (y/o **Preview** si pruebas desde un PR). Vercel permite limitarlas por environment y es fácil dejarlas solo en uno.
+> 3. **Las env vars no se aplican a deploys ya existentes.** Después de añadirlas o editarlas, ve a **Deployments**, abre el deploy afectado → `⋯` → **Redeploy**. Un simple refresh de la página no sirve.
+> 4. Las claves `pk_test_...` y `sk_test_...` deben copiarse completas y sin espacios; un solo carácter de menos provoca este mismo error.
+
 ### PocketBase → Fly.io (recomendado)
 ```bash
 fly launch --name resumidorai-pb
