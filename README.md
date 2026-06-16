@@ -96,7 +96,14 @@ CORS_ORIGINS=https://tu-app.vercel.app
 ```
 
 ### Frontend → Vercel
-Conecta el repo en [vercel.com](https://vercel.com) y añade:
+
+**Paso crítico — Root Directory:** este repo es un monorepo (`backend/` + `frontend/`). Vercel necesita saber que el proyecto Next.js vive en `frontend/`, y esto **solo se configura en el dashboard**, no en `vercel.json`:
+
+1. En [vercel.com](https://vercel.com) → tu proyecto → **Settings → General**
+2. **Root Directory** → click "Edit" → selecciona `frontend`
+3. Guarda. Esto hace que Vercel ejecute `npm install` y `npm run build` ya dentro de `frontend/`, sin necesitar `cd frontend &&` en ningún comando (de hecho, poner `cd frontend &&` ahí es la causa más común del error `exit code 1`, porque con Root Directory configurado el comando ya se ejecuta en esa carpeta).
+
+Luego, en **Settings → Environment Variables**, añade:
 ```
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
 CLERK_SECRET_KEY=sk_test_...
@@ -106,6 +113,8 @@ NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
 NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
 NEXT_PUBLIC_API_URL=https://tu-backend.railway.app
 ```
+
+Redeploy (Deployments → ⋯ → Redeploy) después de cambiar el Root Directory o las env vars.
 
 ### PocketBase → Fly.io (recomendado)
 ```bash
