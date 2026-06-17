@@ -109,6 +109,12 @@ CLERK_WEBHOOK_SECRET=whsec_...   # del Webhook de Clerk, ver sección siguiente
 YOUTUBE_DATA_API_KEY=...          # opcional, mejora duración/metadata
 ENABLE_WHISPER_FALLBACK=true
 WHISPER_MODEL_SIZE=base
+# ⚠️ El plan gratuito de Railway da 512MB de RAM. faster-whisper + sus
+# dependencias (ctranslate2, av) pueden agotar esa memoria al cargar el
+# modelo la primera vez que se usa el fallback, especialmente si el backend
+# ya está procesando resúmenes con Anthropic en paralelo. Si ves el servicio
+# reiniciarse sin motivo aparente (OOM kill), pon ENABLE_WHISPER_FALLBACK=false
+# o sube de plan en Railway antes de reactivarlo.
 
 STRIPE_SECRET_KEY=sk_test_...     # o sk_live_... en producción real
 STRIPE_WEBHOOK_SECRET=whsec_...   # del Webhook de Stripe, ver sección siguiente

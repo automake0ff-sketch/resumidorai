@@ -137,13 +137,25 @@ async def get_usage(clerk_user_id: str) -> dict:
     profile = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
     plan = profile.get("plan", "trial") if profile else "trial"
 
-    now = datetime.now(timezone.utc)
-    month_key = f"{now.year}-{now.month:02d}"
-    usage_record = await pb_get_first(
-        "user_usage",
-        f'clerk_user_id="{_esc(clerk_user_id)}"&&month="{month_key}"',
-    )
-    count = usage_record.get("count", 0) if usage_record else 0
+    if plan == "trial":
+        # El trial es un cupo de por vida (3 resúmenes, una sola vez), no mensual.
+        # Si usáramos el contador mensual aquí, el cupo se "recargaría" cada mes
+        # y el usuario nunca tendría que pagar. Contamos el total histórico de
+        # summary_jobs en vez de user_usage del mes actual.
+        total_result = await pb_list(
+            "summary_jobs",
+            filter=f'clerk_user_id="{_esc(clerk_user_id)}"',
+            per_page=1,
+        )
+        count = total_result.get("totalItems", 0)
+    else:
+        now = datetime.now(timezone.utc)
+        month_key = f"{now.year}-{now.month:02d}"
+        usage_record = await pb_get_first(
+            "user_usage",
+            f'clerk_user_id="{_esc(clerk_user_id)}"&&month="{month_key}"',
+        )
+        count = usage_record.get("count", 0) if usage_record else 0
 
     return {
         "summaries_this_month": count,
@@ -161,12 +173,20 @@ async def delete_job(job_id: str, clerk_user_id: str) -> bool:
 
 
 async def ensure_user_profile(clerk_user_id: str, email: str = "", name: str = ""):
-    """Create user profile if it doesn't exist (fallback for webhook failures)."""
+    """Create user profile if it doesn't exist (fallback for webhook failures).
+
+    El campo 'email' en PocketBase es required y de tipo email (valida formato).
+    El JWT de Clerk por defecto no incluye email, así que si el webhook de
+    user.created todavía no procesó (es async, puede tardar segundos), aquí
+    llegaríamos con email="" y PocketBase rechazaría la creación con un 400.
+    Usamos un email sintético placeholder en ese caso; en cuanto el webhook
+    de Clerk procese, pisará este valor con el email real.
+    """
     existing = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
     if not existing:
         await pb_create("user_profiles", {
             "clerk_user_id": clerk_user_id,
-            "email": email,
+            "email": email or f"{clerk_user_id}@pending.resumidorai.internal",
             "name": name,
             "plan": "trial",
         })

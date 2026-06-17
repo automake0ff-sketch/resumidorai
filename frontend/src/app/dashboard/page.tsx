@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useSearchParams, useRouter } from "next/navigation";
 import { createApiClient, type Job, type Usage } from "@/lib/api";
 
 function fmtDuration(s?: number) {
@@ -35,6 +36,8 @@ const STATUS: Record<string, { label: string; color: string; bg: string }> = {
 
 export default function DashboardPage() {
   const { getToken } = useAuth();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [url, setUrl] = useState("");
   const [language, setLanguage] = useState("es");
   const [length, setLength] = useState<"short" | "medium" | "detailed">("medium");
@@ -45,6 +48,8 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [checkoutBanner, setCheckoutBanner] = useState<"success" | "cancelled" | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
   const pollers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   const getApi = useCallback(async () => {
@@ -61,6 +66,42 @@ export default function DashboardPage() {
       Object.values(currentPollers).forEach(clearInterval);
     };
   }, []);
+
+  // Tras volver de Stripe Checkout, el webhook de Stripe puede tardar unos
+  // segundos en activar el plan. Reintentamos getUsage varias veces para no
+  // mostrarle al usuario "límite alcanzado" justo después de pagar.
+  useEffect(() => {
+    const checkout = searchParams.get("checkout");
+    if (!checkout) return;
+
+    setCheckoutBanner(checkout === "success" ? "success" : "cancelled");
+    router.replace("/dashboard");
+
+    if (checkout === "success") {
+      let attempts = 0;
+      const maxAttempts = 6; // ~18s de margen para que el webhook procese
+      const interval = setInterval(async () => {
+        attempts++;
+        try {
+          const client = await getApi();
+          const fresh = await client.getUsage();
+          setUsage(fresh);
+          if (fresh.plan === "starter" || fresh.plan === "pro" || attempts >= maxAttempts) {
+            clearInterval(interval);
+          }
+        } catch {
+          if (attempts >= maxAttempts) clearInterval(interval);
+        }
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [searchParams, router, getApi]);
+
+  useEffect(() => {
+    if (!checkoutBanner) return;
+    const timeout = setTimeout(() => setCheckoutBanner(null), 8000);
+    return () => clearTimeout(timeout);
+  }, [checkoutBanner]);
 
   async function loadAll() {
     setLoading(true);
@@ -132,6 +173,18 @@ export default function DashboardPage() {
     }
   }
 
+  async function openBillingPortal() {
+    setPortalLoading(true);
+    try {
+      const client = await getApi();
+      const { checkout_url } = await client.openBillingPortal();
+      window.location.href = checkout_url;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "No se pudo abrir el portal de facturación");
+      setPortalLoading(false);
+    }
+  }
+
   async function deleteJob(jobId: string, e: React.MouseEvent) {
     e.stopPropagation();
     try {
@@ -167,6 +220,16 @@ export default function DashboardPage() {
 
   return (
     <div>
+      {checkoutBanner === "success" && (
+        <div style={{ background: "rgba(34,197,94,0.1)", border: "1px solid #22c55e", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#4ade80" }}>
+          ✓ Pago confirmado. Estamos activando tu plan, puede tardar unos segundos en reflejarse abajo.
+        </div>
+      )}
+      {checkoutBanner === "cancelled" && (
+        <div style={{ background: "rgba(234,179,8,0.1)", border: "1px solid #eab308", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#eab308" }}>
+          Pago cancelado. Puedes intentarlo de nuevo cuando quieras desde la página de precios.
+        </div>
+      )}
       {/* Usage bar */}
       {usage && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#111", border: "1px solid #1a1a1a", borderRadius: 10, padding: "12px 16px", marginBottom: 20 }}>
@@ -182,6 +245,15 @@ export default function DashboardPage() {
             <div style={{ width: 120, height: 4, background: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
               <div style={{ height: "100%", borderRadius: 2, background: pct > 80 ? "#ef4444" : "#22c55e", width: `${pct}%`, transition: "width 0.5s ease" }} />
             </div>
+            {(usage.plan === "starter" || usage.plan === "pro") && (
+              <button
+                onClick={openBillingPortal}
+                disabled={portalLoading}
+                style={{ fontSize: 12, padding: "5px 12px", background: "transparent", border: "1px solid #333", color: "#aaa", borderRadius: 6, fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "inherit" }}
+              >
+                {portalLoading ? "Abriendo…" : "Gestionar suscripción"}
+              </button>
+            )}
             {atLimit && (
               <a href="/pricing" style={{ fontSize: 12, padding: "5px 12px", background: "#22c55e", color: "#000", borderRadius: 6, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
                 Actualizar
@@ -255,7 +327,13 @@ export default function DashboardPage() {
         </div>
         {error && (
           <p style={{ color: "#ef4444", fontSize: 13, marginTop: 10, padding: "8px 12px", background: "rgba(239,68,68,0.08)", borderRadius: 6 }}>
-            ⚠ {error}
+            ⚠ {error.includes("/pricing") ? (
+              <>
+                {error.split("/pricing")[0]}
+                <a href="/pricing" style={{ color: "#ef4444", textDecoration: "underline" }}>página de precios</a>
+                {error.split("/pricing")[1]}
+              </>
+            ) : error}
           </p>
         )}
         {atLimit && (

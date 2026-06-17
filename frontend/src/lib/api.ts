@@ -52,6 +52,9 @@ export function createApiClient(token: string) {
 
     deleteSummary: (jobId: string) =>
       request<void>(`/api/summaries/${jobId}`, { method: "DELETE" }),
+
+    openBillingPortal: () =>
+      request<{ checkout_url: string }>("/api/billing/portal", { method: "POST" }),
   };
 }
 

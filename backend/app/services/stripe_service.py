@@ -53,17 +53,22 @@ def create_checkout_session(plan: str, clerk_user_id: str, email: str, success_u
     """Crea una sesión de Stripe Checkout y devuelve la URL a la que redirigir al usuario."""
     price_id = get_price_id_for_plan(plan)
 
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        payment_method_types=["card"],
-        line_items=[{"price": price_id, "quantity": 1}],
-        customer_email=email,
-        client_reference_id=clerk_user_id,
-        metadata={"clerk_user_id": clerk_user_id, "plan": plan},
-        subscription_data={"metadata": {"clerk_user_id": clerk_user_id, "plan": plan}},
-        success_url=success_url,
-        cancel_url=cancel_url,
-    )
+    params = {
+        "mode": "subscription",
+        "payment_method_types": ["card"],
+        "line_items": [{"price": price_id, "quantity": 1}],
+        "client_reference_id": clerk_user_id,
+        "metadata": {"clerk_user_id": clerk_user_id, "plan": plan},
+        "subscription_data": {"metadata": {"clerk_user_id": clerk_user_id, "plan": plan}},
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+    }
+    if email:
+        # Si no hay email confiable, omitimos el parámetro y dejamos que
+        # Stripe Checkout lo pida directamente en su propio formulario.
+        params["customer_email"] = email
+
+    session = stripe.checkout.Session.create(**params)
     return session.url
 
 
