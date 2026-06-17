@@ -11,7 +11,7 @@ from app.models.schemas import JobStatus, SummaryRequest
 logger = logging.getLogger(__name__)
 orchestrator = VideoSummaryOrchestrator()
 
-PLAN_LIMITS = {"free": 5, "starter": 50, "pro": 200, "unlimited": 99999}
+from app.services.stripe_service import PLAN_LIMITS
 
 
 def _esc(value: str) -> str:
@@ -56,11 +56,16 @@ async def process_job(job_id: str):
         metadata = await youtube_service.get_metadata(video_id)
         transcript_data = youtube_service.get_transcript(video_id, job["language"])
 
+        # La YouTube Data API da la duración real del video (más fiable que
+        # calcularla desde el último timestamp de la transcripción, que puede
+        # quedarse corto si el video tiene silencio o créditos al final).
+        duration_seconds = metadata.get("duration_seconds_hint") or transcript_data["duration_seconds"]
+
         ai_result = await orchestrator.process(
             raw_transcript=transcript_data["raw"],
             transcript_with_timestamps=transcript_data["with_timestamps"],
             title=metadata["title"],
-            duration_seconds=transcript_data["duration_seconds"],
+            duration_seconds=duration_seconds,
             language=job["language"],
             length=job["length"],
             include_key_points=job.get("include_key_points", True),
@@ -71,7 +76,7 @@ async def process_job(job_id: str):
             "status": JobStatus.completed,
             "title": metadata["title"],
             "thumbnail": metadata["thumbnail"],
-            "duration_seconds": transcript_data["duration_seconds"],
+            "duration_seconds": duration_seconds,
             "summary": ai_result["summary"],
             "key_points": ai_result["key_points"],
             "chapters": ai_result["chapters"],
@@ -130,7 +135,7 @@ async def get_user_jobs(clerk_user_id: str, page: int = 1, per_page: int = 20) -
 
 async def get_usage(clerk_user_id: str) -> dict:
     profile = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
-    plan = profile.get("plan", "free") if profile else "free"
+    plan = profile.get("plan", "trial") if profile else "trial"
 
     now = datetime.now(timezone.utc)
     month_key = f"{now.year}-{now.month:02d}"
@@ -142,7 +147,7 @@ async def get_usage(clerk_user_id: str) -> dict:
 
     return {
         "summaries_this_month": count,
-        "summaries_limit": PLAN_LIMITS.get(plan, 5),
+        "summaries_limit": PLAN_LIMITS.get(plan, 0),
         "plan": plan,
     }
 
@@ -163,5 +168,5 @@ async def ensure_user_profile(clerk_user_id: str, email: str = "", name: str = "
             "clerk_user_id": clerk_user_id,
             "email": email,
             "name": name,
-            "plan": "free",
+            "plan": "trial",
         })

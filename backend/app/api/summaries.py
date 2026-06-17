@@ -42,9 +42,14 @@ async def submit_summary(
 
     usage = await get_usage(user["user_id"])
     if usage["summaries_this_month"] >= usage["summaries_limit"]:
+        if usage["plan"] in ("trial", "none"):
+            raise HTTPException(
+                status_code=402,
+                detail="Necesitas una suscripción activa para seguir resumiendo videos. Elige un plan en /pricing.",
+            )
         raise HTTPException(
             status_code=429,
-            detail=f"Límite mensual alcanzado ({usage['summaries_limit']} resúmenes). Actualiza tu plan en /pricing.",
+            detail=f"Límite mensual alcanzado ({usage['summaries_limit']} resúmenes). Mejora tu plan en /pricing.",
         )
 
     job_id = await create_job(clerk_user_id=user["user_id"], request=request)

@@ -171,7 +171,9 @@ export default function DashboardPage() {
       {usage && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#111", border: "1px solid #1a1a1a", borderRadius: 10, padding: "12px 16px", marginBottom: 20 }}>
           <div>
-            <span style={{ fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 600 }}>Plan {usage.plan}</span>
+            <span style={{ fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 600 }}>
+              Plan {usage.plan === "trial" ? "de prueba" : usage.plan === "none" ? "sin suscripción" : usage.plan}
+            </span>
             <p style={{ fontSize: 14, fontWeight: 500, marginTop: 2, color: pct > 80 ? "#ef4444" : "#e5e5e5" }}>
               {usage.summaries_this_month} / {usage.summaries_limit} resúmenes este mes
             </p>
@@ -258,7 +260,9 @@ export default function DashboardPage() {
         )}
         {atLimit && (
           <p style={{ color: "#eab308", fontSize: 13, marginTop: 10 }}>
-            Límite alcanzado. <a href="/pricing" style={{ color: "#22c55e", textDecoration: "underline" }}>Actualiza tu plan</a>
+            {usage?.plan === "trial" || usage?.plan === "none"
+              ? <>Tu prueba gratuita terminó. <a href="/pricing" style={{ color: "#22c55e", textDecoration: "underline" }}>Elige un plan para seguir resumiendo</a></>
+              : <>Límite mensual alcanzado. <a href="/pricing" style={{ color: "#22c55e", textDecoration: "underline" }}>Mejora tu plan</a></>}
           </p>
         )}
       </div>

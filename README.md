@@ -79,21 +79,65 @@ En [Clerk Dashboard](https://dashboard.clerk.com):
 
 ## Deploy a producción
 
-### Backend → Railway
-```bash
-railway login
-railway init
-railway up
-```
-Variables en Railway Dashboard:
+### PocketBase + Backend → Railway
+
+Este monorepo despliega **dos servicios separados** en Railway dentro del mismo proyecto: PocketBase (base de datos) y el backend FastAPI. Cada uno necesita su propio Root Directory, igual que hicimos con Vercel.
+
+**1. Despliega PocketBase primero:**
+1. En [railway.com](https://railway.com) → **New Project** → **Deploy from GitHub repo** → selecciona este repo
+2. En el servicio creado → **Settings → Root Directory** → escribe `pocketbase`
+3. **Settings → Networking** → **Generate Domain** para obtener una URL pública `https://xxx.up.railway.app`
+4. **Importante — datos persistentes:** en **Settings → Volumes** → añade un volumen montado en `/pb/pb_data`. Sin esto, cada redeploy borra todos los usuarios y resúmenes guardados.
+5. Una vez desplegado, abre `https://tu-pocketbase.up.railway.app/_/` en el navegador y crea la cuenta de admin manualmente (PocketBase lo pide la primera vez que accedes a la UI, no se puede automatizar por API antes de que exista el primer admin)
+6. Con el admin creado, importa `pocketbase_schema.json` desde **Settings → Import collections** en esa misma UI
+
+**2. Despliega el backend FastAPI:**
+1. En el mismo proyecto de Railway → **New** → **GitHub Repo** → mismo repo otra vez
+2. **Settings → Root Directory** → escribe `backend`
+3. **Settings → Networking** → **Generate Domain**
+4. Variables en **Variables**:
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-POCKETBASE_URL=https://tu-pocketbase.fly.dev
-POCKETBASE_ADMIN_EMAIL=admin@...
-POCKETBASE_ADMIN_PASSWORD=...
+
+POCKETBASE_URL=https://tu-pocketbase.up.railway.app
+POCKETBASE_ADMIN_EMAIL=el-email-que-creaste-en-el-paso-anterior
+POCKETBASE_ADMIN_PASSWORD=la-contraseña-que-creaste
+
 CLERK_ISSUER_URL=https://discrete-reptile-59.clerk.accounts.dev
+CLERK_WEBHOOK_SECRET=whsec_...   # del Webhook de Clerk, ver sección siguiente
+
+YOUTUBE_DATA_API_KEY=...          # opcional, mejora duración/metadata
+ENABLE_WHISPER_FALLBACK=true
+WHISPER_MODEL_SIZE=base
+
+STRIPE_SECRET_KEY=sk_test_...     # o sk_live_... en producción real
+STRIPE_WEBHOOK_SECRET=whsec_...   # del Webhook de Stripe, ver sección siguiente
+STRIPE_PRODUCT_STARTER=prod_UiLxrL4q3jo0d5
+STRIPE_PRODUCT_PRO=prod_UiLxoqpYqemCDN
+
 CORS_ORIGINS=https://tu-app.vercel.app
+FRONTEND_URL=https://tu-app.vercel.app
 ```
+5. Copia la URL pública que te da Railway para este servicio — la necesitas para el siguiente paso
+
+**3. Conecta el frontend al backend:**
+En Vercel → **Settings → Environment Variables** → actualiza:
+```
+NEXT_PUBLIC_API_URL=https://tu-backend.up.railway.app
+```
+Y haz **Redeploy**. Sin este paso exacto, el frontend sigue intentando llamar a `localhost:8000` (que no existe en el navegador del usuario) y verás el error `Failed to fetch` al intentar resumir un video.
+
+### Webhooks (necesarios para que los pagos y el registro funcionen)
+
+**Clerk** → [Dashboard](https://dashboard.clerk.com) → Webhooks → Add Endpoint:
+- URL: `https://tu-backend.up.railway.app/api/webhooks/clerk`
+- Eventos: `user.created`, `user.updated`, `user.deleted`
+- Copia el "Signing Secret" → pégalo en `CLERK_WEBHOOK_SECRET` en Railway
+
+**Stripe** → [Dashboard](https://dashboard.stripe.com/webhooks) → Add endpoint:
+- URL: `https://tu-backend.up.railway.app/api/webhooks/stripe`
+- Eventos: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
+- Copia el "Signing secret" → pégalo en `STRIPE_WEBHOOK_SECRET` en Railway
 
 ### Frontend → Vercel
 
@@ -122,11 +166,9 @@ Redeploy (Deployments → ⋯ → Redeploy) después de cambiar el Root Director
 > 3. **Las env vars no se aplican a deploys ya existentes.** Después de añadirlas o editarlas, ve a **Deployments**, abre el deploy afectado → `⋯` → **Redeploy**. Un simple refresh de la página no sirve.
 > 4. Las claves `pk_test_...` y `sk_test_...` deben copiarse completas y sin espacios; un solo carácter de menos provoca este mismo error.
 
-### PocketBase → Fly.io (recomendado)
-```bash
-fly launch --name resumidorai-pb
-fly deploy
-```
+> ⚠️ **Error `Failed to fetch` al pegar una URL y darle a "Resumir"**: el navegador no encuentra ningún backend al que llamar. Casi siempre es una de estas dos causas:
+> 1. `NEXT_PUBLIC_API_URL` en Vercel sigue apuntando a `http://localhost:8000` o a un placeholder tipo `https://tu-backend.railway.app` — actualízala con la URL real que Railway te dio para el servicio del backend, y haz Redeploy.
+> 2. El backend FastAPI directamente no está desplegado todavía. Pegar la URL en el navegador (`https://tu-backend.up.railway.app/api/health`) debe devolver `{"status":"ok",...}`; si da timeout o 404, el backend no está corriendo y hay que completar el paso "PocketBase + Backend → Railway" de arriba.
 
 ---
 

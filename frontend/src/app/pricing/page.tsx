@@ -1,40 +1,64 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
-import { SignedIn, SignedOut } from "@clerk/nextjs";
+import { SignedIn, SignedOut, useAuth } from "@clerk/nextjs";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const plans = [
   {
-    name: "Free",
-    price: "0",
-    desc: "Para probar el servicio",
-    limit: "5 resúmenes / mes",
-    features: ["Resumen principal", "Puntos clave", "Idioma español e inglés"],
-    cta: "Empezar gratis",
-    href: "/sign-up",
-    highlight: false,
-  },
-  {
+    id: "starter",
     name: "Starter",
     price: "9",
     desc: "Para uso regular",
     limit: "50 resúmenes / mes",
-    features: ["Todo de Free", "Capítulos automáticos", "Todos los idiomas", "Longitud personalizable"],
-    cta: "Elegir Starter",
-    href: "/sign-up",
+    features: ["Resumen + puntos clave", "Capítulos automáticos", "Todos los idiomas", "Longitud personalizable"],
+    cta: "Suscribirme a Starter",
     highlight: true,
   },
   {
+    id: "pro",
     name: "Pro",
     price: "29",
     desc: "Para equipos y creadores",
     limit: "200 resúmenes / mes",
     features: ["Todo de Starter", "Transcripción completa", "Exportar a texto", "Soporte prioritario"],
-    cta: "Elegir Pro",
-    href: "/sign-up",
+    cta: "Suscribirme a Pro",
     highlight: false,
   },
 ];
 
 export default function PricingPage() {
+  const { getToken, isSignedIn } = useAuth();
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  async function subscribe(planId: string) {
+    setError("");
+    setLoadingPlan(planId);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/billing/checkout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ plan: planId }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "No se pudo iniciar el pago");
+      }
+      const data = await res.json();
+      window.location.href = data.checkout_url;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error al iniciar el pago");
+      setLoadingPlan(null);
+    }
+  }
+
   return (
     <div style={{ minHeight: "100vh", background: "#0a0a0a", color: "#f5f5f5", fontFamily: "Inter, system-ui, sans-serif" }}>
       <nav style={{ borderBottom: "1px solid #1a1a1a", padding: "0 2rem", height: 60, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -51,15 +75,21 @@ export default function PricingPage() {
         </div>
       </nav>
 
-      <section style={{ maxWidth: 900, margin: "0 auto", padding: "5rem 2rem" }}>
-        <div style={{ textAlign: "center", marginBottom: "4rem" }}>
+      <section style={{ maxWidth: 700, margin: "0 auto", padding: "5rem 2rem" }}>
+        <div style={{ textAlign: "center", marginBottom: "3rem" }}>
           <h1 style={{ fontSize: "clamp(2rem, 5vw, 3rem)", fontWeight: 800, letterSpacing: "-0.04em", marginBottom: 16 }}>Planes simples y transparentes</h1>
-          <p style={{ fontSize: 16, color: "#888" }}>Empieza gratis. Actualiza cuando necesites más.</p>
+          <p style={{ fontSize: 16, color: "#888" }}>Sin capa gratuita: 3 resúmenes de prueba al registrarte, luego elige tu plan.</p>
         </div>
+
+        {error && (
+          <p style={{ color: "#ef4444", fontSize: 13, textAlign: "center", marginBottom: 20, padding: "10px 16px", background: "rgba(239,68,68,0.08)", borderRadius: 8 }}>
+            ⚠ {error}
+          </p>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 20 }}>
           {plans.map((plan) => (
-            <div key={plan.name} style={{
+            <div key={plan.id} style={{
               background: plan.highlight ? "#0d1f17" : "#111",
               border: `1px solid ${plan.highlight ? "#22c55e" : "#1a1a1a"}`,
               borderRadius: 16,
@@ -86,20 +116,34 @@ export default function PricingPage() {
                   </li>
                 ))}
               </ul>
-              <Link href={plan.href} style={{
-                display: "block",
-                textAlign: "center",
-                padding: "11px 20px",
-                background: plan.highlight ? "#22c55e" : "transparent",
-                border: plan.highlight ? "none" : "1px solid #333",
-                color: plan.highlight ? "#000" : "#ccc",
-                borderRadius: 8,
-                fontWeight: 600,
-                fontSize: 14,
-                textDecoration: "none",
-              }}>
-                {plan.cta}
-              </Link>
+
+              {isSignedIn ? (
+                <button
+                  onClick={() => subscribe(plan.id)}
+                  disabled={loadingPlan !== null}
+                  style={{
+                    display: "block", width: "100%", textAlign: "center", padding: "11px 20px",
+                    background: plan.highlight ? "#22c55e" : "transparent",
+                    border: plan.highlight ? "none" : "1px solid #333",
+                    color: plan.highlight ? "#000" : "#ccc",
+                    borderRadius: 8, fontWeight: 600, fontSize: 14, cursor: "pointer",
+                    opacity: loadingPlan && loadingPlan !== plan.id ? 0.5 : 1,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {loadingPlan === plan.id ? "Redirigiendo a Stripe…" : plan.cta}
+                </button>
+              ) : (
+                <Link href="/sign-up" style={{
+                  display: "block", textAlign: "center", padding: "11px 20px",
+                  background: plan.highlight ? "#22c55e" : "transparent",
+                  border: plan.highlight ? "none" : "1px solid #333",
+                  color: plan.highlight ? "#000" : "#ccc",
+                  borderRadius: 8, fontWeight: 600, fontSize: 14, textDecoration: "none",
+                }}>
+                  Crear cuenta para suscribirme
+                </Link>
+              )}
             </div>
           ))}
         </div>

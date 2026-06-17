@@ -12,7 +12,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-from app.api import summaries, webhooks, health
+from app.api import summaries, webhooks, health, billing
 from app.db.pocketbase import init_pocketbase
 
 
@@ -44,3 +44,4 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(summaries.router, prefix="/api/summaries", tags=["summaries"])
 app.include_router(webhooks.router, prefix="/api/webhooks", tags=["webhooks"])
+app.include_router(billing.router, prefix="/api/billing", tags=["billing"])

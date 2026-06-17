@@ -56,7 +56,11 @@
         "unique": false,
         "options": {
           "maxSelect": 1,
-          "values": ["short", "medium", "detailed"]
+          "values": [
+            "short",
+            "medium",
+            "detailed"
+          ]
         }
       },
       {
@@ -99,7 +103,12 @@
         "unique": false,
         "options": {
           "maxSelect": 1,
-          "values": ["pending", "processing", "completed", "failed"]
+          "values": [
+            "pending",
+            "processing",
+            "completed",
+            "failed"
+          ]
         }
       },
       {
@@ -300,7 +309,12 @@
         "unique": false,
         "options": {
           "maxSelect": 1,
-          "values": ["free", "starter", "pro", "unlimited"]
+          "values": [
+            "trial",
+            "starter",
+            "pro",
+            "none"
+          ]
         }
       },
       {
