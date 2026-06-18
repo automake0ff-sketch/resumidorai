@@ -24,6 +24,44 @@ logger = logging.getLogger(__name__)
 _db = None
 
 
+def _escape_newlines_inside_json_strings(text: str) -> str:
+    """
+    Recorre el texto carácter a carácter, sabiendo en todo momento si está
+    dentro de un valor string de JSON o no, y solo convierte saltos de línea
+    reales a '\\n' escapado cuando está DENTRO de un string. Los saltos de
+    línea que dan formato/indentación al documento JSON en sí (fuera de
+    cualquier string) se dejan intactos.
+
+    Esto es necesario porque el .json de cuenta de servicio que descarga
+    Firebase tiene el campo private_key con saltos de línea reales de PEM,
+    y al pegarlo como variable de entorno de una pieza (sin re-serializarlo)
+    el resultado no es JSON válido tal cual.
+    """
+    result = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if escaped:
+            result.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            result.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if ch == "\n" and in_string:
+            result.append("\\n")
+            continue
+        if ch == "\r" and in_string:
+            continue
+        result.append(ch)
+    return "".join(result)
+
+
 async def init_pocketbase():
     """
     Se mantiene el nombre 'init_pocketbase' por compatibilidad con el resto
@@ -44,8 +82,28 @@ async def init_pocketbase():
 
     try:
         service_account_info = json.loads(raw_json)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido: {e}")
+    except json.JSONDecodeError:
+        # El archivo .json que descarga Firebase tiene saltos de línea REALES
+        # dentro del campo private_key (no \n escapado). Eso es JSON inválido
+        # tal cual si se pega como una sola variable de entorno -- pero es
+        # exactamente como cualquier persona lo pegaría copiando el archivo
+        # sin más. Reintentamos saneando solo los saltos de línea que caen
+        # DENTRO de un valor string (los de fuera son el formato/indentación
+        # del propio documento JSON y no deben tocarse).
+        try:
+            sanitized = _escape_newlines_inside_json_strings(raw_json)
+            service_account_info = json.loads(sanitized)
+            logger.warning(
+                "FIREBASE_SERVICE_ACCOUNT_JSON tenía saltos de línea sin escapar "
+                "dentro de algún valor (típico al pegar el .json de Firebase tal "
+                "cual); se corrigió automáticamente. Considera re-guardar la "
+                "variable ya saneada para evitar este aviso en el futuro."
+            )
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido ni siquiera "
+                f"tras intentar corregir saltos de línea: {e}"
+            )
 
     if not firebase_admin._apps:
         cred = credentials.Certificate(service_account_info)
