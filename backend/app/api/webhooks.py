@@ -4,7 +4,7 @@ import os
 import stripe
 from fastapi import APIRouter, Request, HTTPException, Header
 from svix.webhooks import Webhook, WebhookVerificationError
-from app.db.pocketbase import pb_create, pb_get_first, pb_update
+from app.db.firestore_client import pb_create, pb_get_first, pb_update
 from app.services.stripe_service import plan_from_product_id
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ async def clerk_webhook(
     svix_signature: str = Header(None, alias="svix-signature"),
 ):
     """
-    Sincroniza usuarios de Clerk con PocketBase.
+    Sincroniza usuarios de Clerk con Firestore.
     Verifica la firma Svix para confirmar que el request viene realmente de Clerk.
     """
     body = await request.body()

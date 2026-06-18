@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from app.auth.clerk import get_current_user
 from app.services.stripe_service import create_checkout_session, create_billing_portal_session
 from app.services.job_processor import ensure_user_profile
-from app.db.pocketbase import pb_get_first
+from app.db.firestore_client import pb_get_first
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,7 +28,7 @@ async def create_checkout(request: CheckoutRequest, user: dict = Depends(get_cur
         raise HTTPException(status_code=400, detail="Plan inválido. Usa 'starter' o 'pro'.")
 
     # El JWT de Clerk por defecto NO incluye email/name (solo 'sub'), así que
-    # leemos el email real desde el perfil en PocketBase, sincronizado por el
+    # leemos el email real desde el perfil en Firestore, sincronizado por el
     # webhook de Clerk. Si por algún motivo el perfil no existe aún, lo creamos
     # como red de seguridad (aunque normalmente ya lo crea ensure_user_profile
     # en /api/summaries la primera vez que el usuario interactúa).

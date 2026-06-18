@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 
 from app.api import summaries, webhooks, health, billing
-from app.db.pocketbase import init_pocketbase
+from app.db.firestore_client import init_pocketbase
 
 
 @asynccontextmanager

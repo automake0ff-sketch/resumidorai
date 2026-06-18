@@ -2,7 +2,7 @@
 
 Resume cualquier video de YouTube con IA en segundos.
 
-**Stack:** Next.js 14 · FastAPI · PocketBase · Clerk · Claude AI · Vercel · Railway
+**Stack:** Next.js 14 · FastAPI · Firebase (Firestore) · Clerk · Claude AI · Vercel · Railway
 
 ---
 
@@ -11,7 +11,7 @@ Resume cualquier video de YouTube con IA en segundos.
 ```
 Usuario → Next.js (Vercel) → FastAPI (Railway)
                 ↓                    ↓
-             Clerk Auth        PocketBase DB
+             Clerk Auth        Firestore (Firebase)
                                     ↓
                              Agentes IA (Claude)
                                     ↓
@@ -26,19 +26,11 @@ git clone https://github.com/automake0ff-sketch/resumidorai.git
 cd resumidorai
 ```
 
-### 2. PocketBase
-```bash
-# Descarga PocketBase desde https://pocketbase.io/docs/
-./pocketbase serve
-
-# Configura las colecciones:
-cd backend
-cp .env.example .env
-# Rellena POCKETBASE_URL, POCKETBASE_ADMIN_EMAIL, POCKETBASE_ADMIN_PASSWORD
-
-python setup_pocketbase.py
-```
-Admin UI disponible en: `http://localhost:8090/_/`
+### 2. Firebase / Firestore
+1. Crea un proyecto en [console.firebase.google.com](https://console.firebase.google.com)
+2. **Compilación → Firestore Database** → Crear base de datos → modo producción
+3. ⚙️ **Configuración del proyecto → Cuentas de servicio** → **Generar nueva clave privada** → descarga el `.json`
+4. Ese archivo **no se sube al repo nunca**. Su contenido completo (en una sola línea) va como variable de entorno `FIREBASE_SERVICE_ACCOUNT_JSON` en el paso siguiente.
 
 ### 3. Backend
 ```bash
@@ -46,8 +38,8 @@ cd backend
 pip install -r requirements.txt
 
 # Variables necesarias en .env:
-# ANTHROPIC_API_KEY, POCKETBASE_URL, POCKETBASE_ADMIN_EMAIL,
-# POCKETBASE_ADMIN_PASSWORD, CLERK_ISSUER_URL
+# ANTHROPIC_API_KEY, FIREBASE_SERVICE_ACCOUNT_JSON (el JSON completo
+# de la cuenta de servicio, en una sola línea), CLERK_ISSUER_URL
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -79,29 +71,21 @@ En [Clerk Dashboard](https://dashboard.clerk.com):
 
 ## Deploy a producción
 
-### PocketBase + Backend → Railway
+### Backend → Railway
 
-Este monorepo despliega **dos servicios separados** en Railway dentro del mismo proyecto: PocketBase (base de datos) y el backend FastAPI. Cada uno necesita su propio Root Directory, igual que hicimos con Vercel.
+Este monorepo tiene `backend/`, `frontend/` y otras carpetas. Railway necesita saber explícitamente dónde está el backend FastAPI:
 
-**1. Despliega PocketBase primero:**
 1. En [railway.com](https://railway.com) → **New Project** → **Deploy from GitHub repo** → selecciona este repo
-2. En el servicio creado → **Settings → Root Directory** → escribe `pocketbase`
+2. En el servicio creado → **Settings → Root Directory** → escribe `backend` (sin esto, Railway intenta analizar la raíz del repo, no encuentra ningún lenguaje reconocible y el deploy falla con un error de Railpack)
 3. **Settings → Networking** → **Generate Domain** para obtener una URL pública `https://xxx.up.railway.app`
-4. **Importante — datos persistentes:** en **Settings → Volumes** → añade un volumen montado en `/pb/pb_data`. Sin esto, cada redeploy borra todos los usuarios y resúmenes guardados.
-5. Una vez desplegado, abre `https://tu-pocketbase.up.railway.app/_/` en el navegador y crea la cuenta de admin manualmente (PocketBase lo pide la primera vez que accedes a la UI, no se puede automatizar por API antes de que exista el primer admin)
-6. Con el admin creado, importa `pocketbase_schema.json` desde **Settings → Import collections** en esa misma UI
-
-**2. Despliega el backend FastAPI:**
-1. En el mismo proyecto de Railway → **New** → **GitHub Repo** → mismo repo otra vez
-2. **Settings → Root Directory** → escribe `backend`
-3. **Settings → Networking** → **Generate Domain**
 4. Variables en **Variables**:
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 
-POCKETBASE_URL=https://tu-pocketbase.up.railway.app
-POCKETBASE_ADMIN_EMAIL=el-email-que-creaste-en-el-paso-anterior
-POCKETBASE_ADMIN_PASSWORD=la-contraseña-que-creaste
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...",...}
+# El JSON completo de la cuenta de servicio de Firebase, en una sola línea.
+# Se obtiene en Firebase Console -> Configuración del proyecto ->
+# Cuentas de servicio -> Generar nueva clave privada.
 
 CLERK_ISSUER_URL=https://discrete-reptile-59.clerk.accounts.dev
 CLERK_WEBHOOK_SECRET=whsec_...   # del Webhook de Clerk, ver sección siguiente
@@ -126,7 +110,7 @@ FRONTEND_URL=https://tu-app.vercel.app
 ```
 5. Copia la URL pública que te da Railway para este servicio — la necesitas para el siguiente paso
 
-**3. Conecta el frontend al backend:**
+**Conecta el frontend al backend:**
 En Vercel → **Settings → Environment Variables** → actualiza:
 ```
 NEXT_PUBLIC_API_URL=https://tu-backend.up.railway.app
@@ -174,7 +158,7 @@ Redeploy (Deployments → ⋯ → Redeploy) después de cambiar el Root Director
 
 > ⚠️ **Error `Failed to fetch` al pegar una URL y darle a "Resumir"**: el navegador no encuentra ningún backend al que llamar. Casi siempre es una de estas dos causas:
 > 1. `NEXT_PUBLIC_API_URL` en Vercel sigue apuntando a `http://localhost:8000` o a un placeholder tipo `https://tu-backend.railway.app` — actualízala con la URL real que Railway te dio para el servicio del backend, y haz Redeploy.
-> 2. El backend FastAPI directamente no está desplegado todavía. Pegar la URL en el navegador (`https://tu-backend.up.railway.app/api/health`) debe devolver `{"status":"ok",...}`; si da timeout o 404, el backend no está corriendo y hay que completar el paso "PocketBase + Backend → Railway" de arriba.
+> 2. El backend FastAPI directamente no está desplegado todavía. Pegar la URL en el navegador (`https://tu-backend.up.railway.app/api/health`) debe devolver `{"status":"ok",...}`; si da timeout o 404, el backend no está corriendo y hay que completar el paso "Backend → Railway" de arriba.
 
 ---
 
@@ -189,15 +173,16 @@ resumidorai/
 │   │   ├── prompts/prompts.py        # Prompts optimizados
 │   │   ├── api/
 │   │   │   ├── summaries.py          # CRUD endpoints
-│   │   │   ├── webhooks.py           # Clerk sync
+│   │   │   ├── billing.py            # Checkout y portal de Stripe
+│   │   │   ├── webhooks.py           # Clerk + Stripe sync
 │   │   │   └── health.py
 │   │   ├── auth/clerk.py             # Verificación JWT
-│   │   ├── db/pocketbase.py          # Cliente PocketBase REST
+│   │   ├── db/firestore_client.py    # Cliente Firestore (Firebase Admin SDK)
 │   │   ├── services/
-│   │   │   ├── youtube.py            # Extracción transcripts
+│   │   │   ├── youtube.py            # Extracción transcripts + Whisper fallback
+│   │   │   ├── stripe_service.py     # Checkout, portal, resolución de planes
 │   │   │   └── job_processor.py      # Pipeline completo
 │   │   └── models/schemas.py
-│   ├── setup_pocketbase.py           # Script de setup inicial
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── frontend/

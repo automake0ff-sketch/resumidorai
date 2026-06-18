@@ -1,9 +1,9 @@
 """
-Pipeline de procesamiento de jobs usando PocketBase.
+Pipeline de procesamiento de jobs usando Firestore.
 """
 import logging
 from datetime import datetime, timezone
-from app.db.pocketbase import pb_create, pb_update, pb_get, pb_get_first, pb_list, pb_delete, pb_upsert
+from app.db.firestore_client import pb_create, pb_update, pb_get, pb_get_first, pb_list, pb_delete, pb_upsert
 from app.services.youtube import youtube_service
 from app.agents.summary_agent import VideoSummaryOrchestrator
 from app.models.schemas import JobStatus, SummaryRequest
@@ -15,7 +15,9 @@ from app.services.stripe_service import PLAN_LIMITS
 
 
 def _esc(value: str) -> str:
-    """Escapa comillas para uso seguro en filtros de PocketBase."""
+    """Sin efecto real con Firestore (las queries usan comparaciones
+    estructuradas, no strings interpolados). Se mantiene como passthrough
+    por compatibilidad con las llamadas existentes más abajo."""
     return value.replace('"', '\\"')
 
 
@@ -175,12 +177,14 @@ async def delete_job(job_id: str, clerk_user_id: str) -> bool:
 async def ensure_user_profile(clerk_user_id: str, email: str = "", name: str = ""):
     """Create user profile if it doesn't exist (fallback for webhook failures).
 
-    El campo 'email' en PocketBase es required y de tipo email (valida formato).
-    El JWT de Clerk por defecto no incluye email, así que si el webhook de
-    user.created todavía no procesó (es async, puede tardar segundos), aquí
-    llegaríamos con email="" y PocketBase rechazaría la creación con un 400.
-    Usamos un email sintético placeholder en ese caso; en cuanto el webhook
-    de Clerk procese, pisará este valor con el email real.
+    El JWT de Clerk por defecto no incluye email ni name (solo 'sub'), así
+    que si el webhook de user.created todavía no procesó (es async, puede
+    tardar segundos), aquí llegaríamos con email="". Firestore no valida el
+    formato (a diferencia de PocketBase), pero seguimos usando un email
+    sintético placeholder en ese caso: lo necesitamos igualmente como valor
+    real para Stripe más adelante, y así evitamos guardar un string vacío
+    que sería confuso de depurar. En cuanto el webhook de Clerk procese,
+    pisará este valor con el email real.
     """
     existing = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
     if not existing:
