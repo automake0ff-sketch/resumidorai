@@ -179,7 +179,16 @@ class YouTubeService:
     def _get_transcript_via_whisper(self, video_id: str, language: str) -> dict:
         """Descarga el audio con yt-dlp y transcribe localmente con faster-whisper.
         Más lento (segundos a minutos según duración del video) pero no requiere
-        ninguna API externa de pago."""
+        ninguna API externa de pago.
+
+        IPs de datacenter (Railway, AWS, etc.) son frecuentemente bloqueadas por
+        YouTube con un chequeo anti-bot ("Sign in to confirm you're not a bot").
+        Usar el cliente 'android' en vez del 'web' por defecto reduce bastante
+        esa probabilidad porque ese endpoint no aplica el mismo chequeo, pero
+        no es una garantía: YouTube puede empezar a bloquearlo también en
+        cualquier momento. No hay una solución 100% robusta sin usar proxies
+        residenciales de pago, que está fuera del alcance de este MVP.
+        """
         import yt_dlp
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -194,12 +203,25 @@ class YouTubeService:
                 }],
                 "quiet": True,
                 "no_warnings": True,
+                # El cliente 'android' evita el chequeo de bot que afecta al
+                # cliente 'web' por defecto en la mayoría de IPs de datacenter.
+                "extractor_args": {"youtube": {"player_client": ["android"]}},
+                "http_headers": {"User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 14)"},
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
             except Exception as e:
-                raise ValueError(f"No se pudo descargar el audio del video: {e}")
+                error_text = str(e)
+                if "Sign in to confirm" in error_text or "not a bot" in error_text:
+                    raise ValueError(
+                        "YouTube está bloqueando temporalmente la descarga de audio "
+                        "desde este servidor (detección anti-bot). Esto puede pasar "
+                        "con videos sin subtítulos, ya que es el único caso donde se "
+                        "necesita descargar el audio. Inténtalo de nuevo en unos minutos, "
+                        "o prueba con un video que sí tenga subtítulos/CC activados."
+                    )
+                raise ValueError(f"No se pudo descargar el audio del video: {error_text}")
 
             if not os.path.exists(audio_path):
                 raise ValueError("No se pudo extraer el audio del video")

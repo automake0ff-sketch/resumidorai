@@ -99,6 +99,18 @@ WHISPER_MODEL_SIZE=base
 # ya está procesando resúmenes con Anthropic en paralelo. Si ves el servicio
 # reiniciarse sin motivo aparente (OOM kill), pon ENABLE_WHISPER_FALLBACK=false
 # o sube de plan en Railway antes de reactivarlo.
+#
+# ⚠️ YouTube bloquea con frecuencia las descargas de audio (yt-dlp) desde
+# IPs de datacenter como las de Railway, con el error "Sign in to confirm
+# you're not a bot". El código ya usa el cliente 'android' de YouTube en
+# vez del 'web' por defecto, que reduce bastante la probabilidad de
+# bloqueo, pero no es una garantía: YouTube puede empezar a bloquearlo
+# también en cualquier momento. Esto solo afecta a videos SIN subtítulos
+# (si el video tiene CC, youtube-transcript-api los lee directamente sin
+# necesitar descargar audio en absoluto). Si el bloqueo es persistente y
+# necesitas que funcione siempre, la única solución robusta es un proxy
+# residencial de pago (ej. Webshare, Bright Data) configurado en yt-dlp,
+# que está fuera del alcance de este MVP.
 
 STRIPE_SECRET_KEY=sk_test_...     # o sk_live_... en producción real
 STRIPE_WEBHOOK_SECRET=whsec_...   # del Webhook de Stripe, ver sección siguiente
