@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlparse
 from pydantic import BaseModel, field_validator
 from typing import Optional
 from enum import Enum
@@ -6,6 +7,18 @@ from enum import Enum
 YOUTUBE_URL_PATTERN = re.compile(
     r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/)|youtu\.be/)[\w-]{11}"
 )
+
+# Allowed YouTube hosts for SSRF protection
+ALLOWED_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def validate_youtube_host(url: str) -> bool:
+    """Validate URL uses only allowed YouTube hosts to prevent SSRF."""
+    try:
+        parsed = urlparse(url)
+        return parsed.hostname in ALLOWED_YOUTUBE_HOSTS
+    except Exception:
+        return False
 
 
 class JobStatus(str, Enum):
@@ -38,6 +51,8 @@ class SummaryRequest(BaseModel):
         v = v.strip()
         if not YOUTUBE_URL_PATTERN.search(v):
             raise ValueError("Debe ser una URL válida de YouTube (youtube.com o youtu.be)")
+        if not validate_youtube_host(v):
+            raise ValueError("Solo se permiten URLs de youtube.com, www.youtube.com, m.youtube.com y youtu.be")
         return v
 
     @field_validator("language")

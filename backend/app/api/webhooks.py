@@ -5,10 +5,20 @@ import stripe
 from fastapi import APIRouter, Request, HTTPException, Header
 from svix.webhooks import Webhook, WebhookVerificationError
 from app.db.firestore_client import pb_create, pb_get_first, pb_update
-from app.services.stripe_service import plan_from_product_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _require_webhook_secret(secret: str, provider: str) -> None:
+    """Fail-closed: in production, missing webhook secret returns 500/503."""
+    if not secret:
+        if os.environ.get("NODE_ENV") == "production" or os.environ.get("ENV") == "production":
+            raise HTTPException(
+                status_code=503,
+                detail=f"{provider} webhook misconfigurado: variable de entorno no está definida"
+            )
+        logger.warning(f"{provider} webhook secret no configurado: continuando en modo desarrollo")
 
 
 @router.get("/health")
@@ -26,24 +36,26 @@ async def clerk_webhook(
     """
     Sincroniza usuarios de Clerk con Firestore.
     Verifica la firma Svix para confirmar que el request viene realmente de Clerk.
+    FAIL-CLOSED: Si falta el secreto en producción, rechaza todos los eventos.
     """
     body = await request.body()
     secret = os.environ.get("CLERK_WEBHOOK_SECRET", "")
 
-    if not secret:
-        logger.warning("CLERK_WEBHOOK_SECRET no configurado: webhook sin verificar")
-    else:
-        if not (svix_id and svix_timestamp and svix_signature):
-            raise HTTPException(status_code=400, detail="Headers Svix faltantes")
-        try:
-            wh = Webhook(secret)
-            wh.verify(body, {
-                "svix-id": svix_id,
-                "svix-timestamp": svix_timestamp,
-                "svix-signature": svix_signature,
-            })
-        except WebhookVerificationError:
-            raise HTTPException(status_code=401, detail="Firma de webhook inválida")
+    # FAIL-CLOSED: Missing secret = 500/503 in production
+    _require_webhook_secret(secret, "CLERK_WEBHOOK_SECRET")
+
+    if not (svix_id and svix_timestamp and svix_signature):
+        raise HTTPException(status_code=400, detail="Headers Svix faltantes")
+
+    try:
+        wh = Webhook(secret)
+        wh.verify(body, {
+            "svix-id": svix_id,
+            "svix-timestamp": svix_timestamp,
+            "svix-signature": svix_signature,
+        })
+    except WebhookVerificationError:
+        raise HTTPException(status_code=401, detail="Firma de webhook inválida")
 
     payload = json.loads(body)
     event_type = payload.get("type")
@@ -80,7 +92,6 @@ async def clerk_webhook(
     elif event_type == "user.deleted":
         existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_id.replace(chr(34), chr(92)+chr(34))}"')
         if existing:
-            # Sin suscripción activa tras borrar la cuenta de Clerk: sin acceso.
             await pb_update("user_profiles", existing["id"], {"plan": "none"})
             logger.info(f"Usuario {clerk_id} eliminado en Clerk, acceso revocado")
 
@@ -94,20 +105,25 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
     - checkout.session.completed: primera suscripción, guarda stripe_customer_id y activa el plan
     - customer.subscription.updated: cambios de plan (upgrade/downgrade) o renovación
     - customer.subscription.deleted: cancelación, revoca el acceso
+
+    FAIL-CLOSED: Si falta el secreto en producción, rechaza todos los eventos.
     """
     body = await request.body()
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-    if not secret:
-        logger.warning("STRIPE_WEBHOOK_SECRET no configurado: webhook de Stripe sin verificar")
-        event = json.loads(body)
-    else:
-        try:
-            event = stripe.Webhook.construct_event(body, stripe_signature, secret)
-        except stripe.error.SignatureVerificationError:
-            raise HTTPException(status_code=401, detail="Firma de webhook de Stripe inválida")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Payload inválido: {e}")
+    # FAIL-CLOSED: Missing secret = 500/503 in production
+    _require_webhook_secret(secret, "STRIPE_WEBHOOK_SECRET")
+
+    # Validate headers are present
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Header stripe-signature faltante")
+
+    try:
+        event = stripe.Webhook.construct_event(body, stripe_signature, secret)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=401, detail="Firma de webhook de Stripe inválida")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Payload inválido: {e}")
 
     event_type = event["type"]
     obj = event["data"]["object"]
@@ -121,7 +137,7 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
             logger.warning("checkout.session.completed sin clerk_user_id, ignorando")
             return {"received": True}
 
-        existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}"')
+        existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}')
         update = {"plan": plan or "starter", "stripe_customer_id": customer_id}
         if existing:
             await pb_update("user_profiles", existing["id"], update)
@@ -136,7 +152,7 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
         product_id = items[0]["price"]["product"] if items else None
         plan = plan_from_product_id(product_id) if product_id else None
 
-        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}"')
+        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}')
         if existing and plan:
             new_plan = plan if status == "active" else "none"
             await pb_update("user_profiles", existing["id"], {"plan": new_plan})
@@ -144,7 +160,7 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
 
     elif event_type == "customer.subscription.deleted":
         customer_id = obj.get("customer")
-        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}"')
+        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}')
         if existing:
             await pb_update("user_profiles", existing["id"], {"plan": "none"})
             logger.info(f"Suscripción cancelada para customer {customer_id}, acceso revocado")

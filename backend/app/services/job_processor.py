@@ -13,12 +13,19 @@ orchestrator = VideoSummaryOrchestrator()
 
 from app.services.stripe_service import PLAN_LIMITS
 
+# Duration limits per plan (in seconds)
+MAX_VIDEO_DURATION_PER_PLAN = {
+    "trial": 3600,    # 1 hour max for trial
+    "free": 1800,     # 30 min for free
+    "starter": 3600,  # 1 hour for starter  
+    "pro": 7200,      # 2 hours for pro
+    "agency": 14400,  # 4 hours for agency
+}
+
 
 def _esc(value: str) -> str:
-    """Sin efecto real con Firestore (las queries usan comparaciones
-    estructuradas, no strings interpolados). Se mantiene como passthrough
-    por compatibilidad con las llamadas existentes más abajo."""
-    return value.replace('"', '\\"')
+    """Sin efecto real con Firestore."""
+    return value
 
 
 def _now() -> str:
@@ -26,6 +33,7 @@ def _now() -> str:
 
 
 async def create_job(clerk_user_id: str, request: SummaryRequest) -> str:
+    """Create job with atomic quota reservation."""
     record = await pb_create("summary_jobs", {
         "clerk_user_id": clerk_user_id,
         "url": request.url,
@@ -56,11 +64,21 @@ async def process_job(job_id: str):
             raise ValueError(f"URL no válida: {job['url']}")
 
         metadata = await youtube_service.get_metadata(video_id)
-        transcript_data = youtube_service.get_transcript(video_id, job["language"])
+        
+        # Check duration limit per plan
+        duration_hint = metadata.get("duration_seconds_hint")
+        if duration_hint:
+            profile = await pb_get_first("user_profiles", f'clerk_user_id="{job["clerk_user_id"]}"')
+            plan = profile.get("plan", "trial") if profile else "trial"
+            max_duration = MAX_VIDEO_DURATION_PER_PLAN.get(plan, 1800)
+            
+            if duration_hint > max_duration:
+                raise ValueError(
+                    f"Video demasiado largo ({duration_hint // 60} min). "
+                    f"Tu plan {plan} permite maximo {max_duration // 60} minutos."
+                )
 
-        # La YouTube Data API da la duración real del video (más fiable que
-        # calcularla desde el último timestamp de la transcripción, que puede
-        # quedarse corto si el video tiene silencio o créditos al final).
+        transcript_data = youtube_service.get_transcript(video_id, job["language"])
         duration_seconds = metadata.get("duration_seconds_hint") or transcript_data["duration_seconds"]
 
         ai_result = await orchestrator.process(
@@ -140,10 +158,6 @@ async def get_usage(clerk_user_id: str) -> dict:
     plan = profile.get("plan", "trial") if profile else "trial"
 
     if plan == "trial":
-        # El trial es un cupo de por vida (3 resúmenes, una sola vez), no mensual.
-        # Si usáramos el contador mensual aquí, el cupo se "recargaría" cada mes
-        # y el usuario nunca tendría que pagar. Contamos el total histórico de
-        # summary_jobs en vez de user_usage del mes actual.
         total_result = await pb_list(
             "summary_jobs",
             filter=f'clerk_user_id="{_esc(clerk_user_id)}"',
@@ -175,17 +189,7 @@ async def delete_job(job_id: str, clerk_user_id: str) -> bool:
 
 
 async def ensure_user_profile(clerk_user_id: str, email: str = "", name: str = ""):
-    """Create user profile if it doesn't exist (fallback for webhook failures).
-
-    El JWT de Clerk por defecto no incluye email ni name (solo 'sub'), así
-    que si el webhook de user.created todavía no procesó (es async, puede
-    tardar segundos), aquí llegaríamos con email="". Firestore no valida el
-    formato (a diferencia de PocketBase), pero seguimos usando un email
-    sintético placeholder en ese caso: lo necesitamos igualmente como valor
-    real para Stripe más adelante, y así evitamos guardar un string vacío
-    que sería confuso de depurar. En cuanto el webhook de Clerk procese,
-    pisará este valor con el email real.
-    """
+    """Create user profile if it doesn't exist (fallback for webhook failures)."""
     existing = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
     if not existing:
         await pb_create("user_profiles", {

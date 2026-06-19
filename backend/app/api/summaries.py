@@ -36,7 +36,12 @@ async def submit_summary(
     background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
-    """Envía un video para resumir. El procesamiento ocurre en background."""
+    """Envia un video para resumir. El procesamiento ocurre en background.
+    
+    NOTA: La verificacion de cuotas ocurre en submit_summary antes de crear el job.
+    Esto es vulnerable a race conditions en alta concurrencia. Para mayor seguridad,
+    considerar usar transacciones Firestore con estado 'quota_reserved'/'quota_consumed'.
+    """
     # Auto-create profile if webhook missed it
     await ensure_user_profile(user["user_id"], user.get("email", ""), user.get("name", ""))
 
@@ -45,11 +50,11 @@ async def submit_summary(
         if usage["plan"] in ("trial", "none"):
             raise HTTPException(
                 status_code=402,
-                detail="Necesitas una suscripción activa para seguir resumiendo videos. Elige un plan en /pricing.",
+                detail="Necesitas una suscripcion activa para seguir resumiendo videos. Elige un plan en /pricing.",
             )
         raise HTTPException(
             status_code=429,
-            detail=f"Límite mensual alcanzado ({usage['summaries_limit']} resúmenes). Mejora tu plan en /pricing.",
+            detail=f"Limite mensual alcanzado ({usage['summaries_limit']} resumenes). Mejora tu plan en /pricing.",
         )
 
     job_id = await create_job(clerk_user_id=user["user_id"], request=request)
@@ -79,7 +84,7 @@ async def list_summaries(
     per_page: int = Query(default=20, le=100),
     user: dict = Depends(get_current_user),
 ):
-    """Lista los resúmenes del usuario, más recientes primero."""
+    """Lista los resumenes del usuario, mas recientes primero."""
     jobs = await get_user_jobs(clerk_user_id=user["user_id"], page=page, per_page=per_page)
     return [_map_job(j) for j in jobs]
 

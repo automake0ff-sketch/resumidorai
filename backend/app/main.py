@@ -22,12 +22,15 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# Disable docs in production for security
+is_production = os.environ.get("NODE_ENV") == "production" or os.environ.get("ENV") == "production"
+
 app = FastAPI(
     title="ResumidorAI API",
     description="Resume videos de YouTube con IA",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
+    docs_url=None if is_production else "/docs",
     redoc_url=None,
 )
 
