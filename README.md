@@ -111,6 +111,14 @@ WHISPER_MODEL_SIZE=base
 # necesitas que funcione siempre, la única solución robusta es un proxy
 # residencial de pago (ej. Webshare, Bright Data) configurado en yt-dlp,
 # que está fuera del alcance de este MVP.
+#
+# ⚠️ MANTENIMIENTO: YouTube cambia el formato interno de su reproductor
+# con frecuencia, y versiones antiguas de yt-dlp dejan de poder leerlo
+# (error típico: "Failed to extract any player response"). El proyecto
+# yt-dlp publica actualizaciones muy seguido para seguirle el paso. Si
+# el fallback de Whisper empieza a fallar con ese mensaje, comprueba la
+# última versión en https://github.com/yt-dlp/yt-dlp/releases y actualiza
+# el pin en requirements.txt (yt-dlp==X.Y.Z).
 
 STRIPE_SECRET_KEY=sk_test_...     # o sk_live_... en producción real
 STRIPE_WEBHOOK_SECRET=whsec_...   # del Webhook de Stripe, ver sección siguiente
