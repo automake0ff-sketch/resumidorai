@@ -16,7 +16,7 @@ def _require_webhook_secret(secret: str, provider: str) -> None:
         if os.environ.get("NODE_ENV") == "production" or os.environ.get("ENV") == "production":
             raise HTTPException(
                 status_code=503,
-                detail=f"{provider} webhook misconfigurado: variable de entorno no está definida"
+                detail=f"{provider} webhook misconfigurado: variable de entorno no esta definida"
             )
         logger.warning(f"{provider} webhook secret no configurado: continuando en modo desarrollo")
 
@@ -41,7 +41,6 @@ async def clerk_webhook(
     body = await request.body()
     secret = os.environ.get("CLERK_WEBHOOK_SECRET", "")
 
-    # FAIL-CLOSED: Missing secret = 500/503 in production
     _require_webhook_secret(secret, "CLERK_WEBHOOK_SECRET")
 
     if not (svix_id and svix_timestamp and svix_signature):
@@ -55,7 +54,7 @@ async def clerk_webhook(
             "svix-signature": svix_signature,
         })
     except WebhookVerificationError:
-        raise HTTPException(status_code=401, detail="Firma de webhook inválida")
+        raise HTTPException(status_code=401, detail="Firma de webhook invalida")
 
     payload = json.loads(body)
     event_type = payload.get("type")
@@ -102,28 +101,26 @@ async def clerk_webhook(
 async def stripe_webhook(request: Request, stripe_signature: str = Header(None, alias="stripe-signature")):
     """
     Activa/actualiza el plan del usuario tras eventos de Stripe:
-    - checkout.session.completed: primera suscripción, guarda stripe_customer_id y activa el plan
-    - customer.subscription.updated: cambios de plan (upgrade/downgrade) o renovación
-    - customer.subscription.deleted: cancelación, revoca el acceso
+    - checkout.session.completed: primera suscripcion, guarda stripe_customer_id y activa el plan
+    - customer.subscription.updated: cambios de plan (upgrade/downgrade) o renovacion
+    - customer.subscription.deleted: cancelacion, revoca el acceso
 
     FAIL-CLOSED: Si falta el secreto en producción, rechaza todos los eventos.
     """
     body = await request.body()
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-    # FAIL-CLOSED: Missing secret = 500/503 in production
     _require_webhook_secret(secret, "STRIPE_WEBHOOK_SECRET")
 
-    # Validate headers are present
     if not stripe_signature:
         raise HTTPException(status_code=400, detail="Header stripe-signature faltante")
 
     try:
         event = stripe.Webhook.construct_event(body, stripe_signature, secret)
     except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=401, detail="Firma de webhook de Stripe inválida")
+        raise HTTPException(status_code=401, detail="Firma de webhook de Stripe invalida")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Payload inválido: {e}")
+        raise HTTPException(status_code=400, detail=f"Payload invalido: {e}")
 
     event_type = event["type"]
     obj = event["data"]["object"]
@@ -137,7 +134,7 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
             logger.warning("checkout.session.completed sin clerk_user_id, ignorando")
             return {"received": True}
 
-        existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}')
+        existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}"')
         update = {"plan": plan or "starter", "stripe_customer_id": customer_id}
         if existing:
             await pb_update("user_profiles", existing["id"], update)
@@ -152,17 +149,17 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None, 
         product_id = items[0]["price"]["product"] if items else None
         plan = plan_from_product_id(product_id) if product_id else None
 
-        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}')
+        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}"')
         if existing and plan:
             new_plan = plan if status == "active" else "none"
             await pb_update("user_profiles", existing["id"], {"plan": new_plan})
-            logger.info(f"Suscripción actualizada para customer {customer_id}: plan={new_plan} status={status}")
+            logger.info(f"Suscripcion actualizada para customer {customer_id}: plan={new_plan} status={status}")
 
     elif event_type == "customer.subscription.deleted":
         customer_id = obj.get("customer")
-        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}')
+        existing = await pb_get_first("user_profiles", f'stripe_customer_id="{customer_id}"')
         if existing:
             await pb_update("user_profiles", existing["id"], {"plan": "none"})
-            logger.info(f"Suscripción cancelada para customer {customer_id}, acceso revocado")
+            logger.info(f"Suscripcion cancelada para customer {customer_id}, acceso revocado")
 
     return {"received": True}
