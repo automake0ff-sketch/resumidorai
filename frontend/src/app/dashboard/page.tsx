@@ -160,7 +160,7 @@ export default function DashboardPage() {
       const client = await getApi();
       const job = await client.submitSummary({
         url: trimmed, language, length,
-        include_chapters: true, include_key_points: true,
+        include_chapters: true, include_key_points: true, include_transcript: true,
       });
       const newJob: Job = { ...job, url: trimmed, language, status: "pending" as const };
       setJobs((prev) => [newJob, ...prev]);
@@ -294,7 +294,7 @@ export default function DashboardPage() {
           </button>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {(["es", "en", "fr", "pt", "de"] as const).map((lang) => (
+          {(["es", "en", "fr", "pt", "de", "it"] as const).map((lang) => (
             <button
               key={lang}
               onClick={() => setLanguage(lang)}
@@ -305,7 +305,7 @@ export default function DashboardPage() {
                 borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
               }}
             >
-              {{ es: "🇪🇸 ES", en: "🇬🇧 EN", fr: "🇫🇷 FR", pt: "🇵🇹 PT", de: "🇩🇪 DE" }[lang]}
+              {{ es: "🇪🇸 ES", en: "🇬🇧 EN", fr: "🇫🇷 FR", pt: "🇵🇹 PT", de: "🇩🇪 DE", it: "🇮🇹 IT" }[lang]}
             </button>
           ))}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
@@ -467,6 +467,14 @@ export default function DashboardPage() {
                       </li>
                     ))}
                   </ul>
+                </section>
+              )}
+
+              {/* Transcript */}
+              {selected.transcript && (
+                <section style={{ marginBottom: 24 }}>
+                  <p style={{ fontSize: 10, color: "#22c55e", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10 }}>TRANSCRIPCIÓN</p>
+                  <p style={{ fontSize: 13, color: "#888", lineHeight: 1.8, maxHeight: 200, overflowY: "auto", padding: "8px 12px", background: "#0a0a0a", borderRadius: 6 }}>{selected.transcript}</p>
                 </section>
               )}
 

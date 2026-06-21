@@ -5,6 +5,7 @@ import stripe
 from fastapi import APIRouter, Request, HTTPException, Header
 from svix.webhooks import Webhook, WebhookVerificationError
 from app.db.firestore_client import pb_create, pb_get_first, pb_update
+from app.services.stripe_service import plan_from_product_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

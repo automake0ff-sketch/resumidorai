@@ -35,6 +35,7 @@ export function createApiClient(token: string) {
       length?: "short" | "medium" | "detailed";
       include_chapters?: boolean;
       include_key_points?: boolean;
+      include_transcript?: boolean;
     }) =>
       request<{ job_id: string; status: string }>("/api/summaries", {
         method: "POST",
@@ -68,6 +69,7 @@ export type Job = {
   summary?: string;
   key_points?: string[];
   chapters?: { start_seconds: number; title: string; summary: string }[];
+  transcript?: string;
   language: string;
   created?: string;
   error?: string;

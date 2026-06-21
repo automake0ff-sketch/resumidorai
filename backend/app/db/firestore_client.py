@@ -28,7 +28,7 @@ def _escape_newlines_inside_json_strings(text: str) -> str:
     """
     Recorre el texto carácter a carácter, sabiendo en todo momento si está
     dentro de un valor string de JSON o no, y solo convierte saltos de línea
-    reales a '\\n' escapado cuando está DENTRO de un string. Los saltos de
+    reales a '\n' escapado cuando está DENTRO de un string. Los saltos de
     línea que dan formato/indentación al documento JSON en sí (fuera de
     cualquier string) se dejan intactos.
 
@@ -77,9 +77,10 @@ async def init_pocketbase():
             "FIREBASE_SERVICE_ACCOUNT_JSON no está configurada. "
             "Pega el JSON completo de la cuenta de servicio de Firebase "
             "(Project Settings -> Service Accounts -> Generate new private key) "
-            "como variable de entorno en Railway."
+            "como variable de entorno. Ejemplo: { \"type\": \"service_account\", ... }"
         )
 
+    service_account_info = {}
     try:
         service_account_info = json.loads(raw_json)
     except json.JSONDecodeError:
@@ -104,6 +105,12 @@ async def init_pocketbase():
                 f"FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido ni siquiera "
                 f"tras intentar corregir saltos de línea: {e}"
             )
+
+    if not service_account_info.get("type") == "service_account":
+        raise ValueError(
+            "FIREBASE_SERVICE_ACCOUNT_JSON debe ser un JSON de cuenta de servicio válido "
+            "y contener el campo \"type\" con valor \"service_account\"."
+        )
 
     if not firebase_admin._apps:
         cred = credentials.Certificate(service_account_info)
@@ -196,6 +203,13 @@ async def pb_list(
     # forma uniforme: pedimos solo lo necesario y devolvemos totalItems con
     # el conteo de la página actual cuando per_page=1 se usa típicamente
     # para checks de "¿existe algo?" más que para paginación real.
+    if sort:
+        if sort.startswith("-"):
+            field = sort[1:]
+            query = query.order_by(field, direction=firestore.Query.DESCENDING)
+        else:
+            query = query.order_by(sort, direction=firestore.Query.ASCENDING)
+
     docs = list(query.limit(per_page).offset((page - 1) * per_page).stream())
 
     items = []
@@ -204,12 +218,6 @@ async def pb_list(
         item["id"] = doc.id
         item["created"] = _serialize_timestamp(item.get("created"))
         items.append(item)
-
-    if sort.startswith("-"):
-        field = sort[1:]
-        items.sort(key=lambda x: x.get(field) or "", reverse=True)
-    elif sort:
-        items.sort(key=lambda x: x.get(sort) or "")
 
     # totalItems real (sin paginar) -- necesario para el conteo de por vida
     # del plan trial. Se pide aparte porque .stream() ya vino limitado arriba.
@@ -255,9 +263,11 @@ def _parse_filter(filter: str) -> list[tuple[str, str]]:
 
 
 def _serialize_timestamp(value: Any) -> str | None:
-    """Convierte un Timestamp de Firestore a ISO 8601 string, igual que
+    """
+    Convierte un Timestamp de Firestore a ISO 8601 string, igual que
     devolvía PocketBase, para no romper el resto del código que espera
-    strings en el campo 'created'."""
+    strings en el campo 'created'.
+    """
     if value is None:
         return None
     if hasattr(value, "isoformat"):
