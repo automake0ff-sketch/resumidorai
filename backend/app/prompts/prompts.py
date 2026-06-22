@@ -1,83 +1,98 @@
 """
-Prompts del sistema ResumidorAI
+Prompts del sistema ResumidorAI — v2.
+
+Optimizaciones vs v1:
+- Un único system prompt con cache_control para prompt caching (~90% reducción en coste de input tokens en llamadas repetidas)
+- Un único user turn que solicita summary + key_points + chapters en una sola llamada (4 llamadas → 1)
+- Structured output vía tool use para garantizar JSON válido sin necesidad de parseo frágil
+- Instrucciones de chunking para vídeos largos
 """
 
-TRANSCRIPT_CLEANER_PROMPT = """Eres un especialista en procesamiento de transcripciones de video.
+SYSTEM_PROMPT = """Eres un experto en síntesis de contenido multimedia y análisis de vídeo.
 
-Limpia y estructura la siguiente transcripción bruta:
-- Elimina repeticiones, muletillas y palabras sin sentido
-- Corrige errores evidentes de transcripción automática
-- Añade puntuación correcta
-- Mantén el significado original intacto
-- No añadas ni inventes contenido
+Tu especialidad es transformar transcripciones de vídeos de YouTube en resúmenes estructurados de alta calidad que capturen la esencia del contenido de forma precisa, coherente y útil.
 
-Transcripción bruta:
-{raw_transcript}
+PRINCIPIOS:
+- Prioriza los insights más valiosos sobre el contenido trivial
+- Mantén el tono y estilo del creador original
+- Sé conciso sin perder profundidad
+- Estructura la información de forma que sea fácil de escanear
+- Responde siempre en el idioma que se te indique
+- No inventes información que no esté en la transcripción
 
-Devuelve SOLO la transcripción limpia, sin comentarios adicionales."""
+FORMATO DE SALIDA:
+Siempre responde con JSON válido siguiendo exactamente el schema indicado en cada solicitud."""
 
+SUMMARY_SYSTEM_WITH_CACHE = [
+    {
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},
+    }
+]
 
-SUMMARY_GENERATOR_PROMPT = """Eres un experto en síntesis de contenido multimedia.
+SUMMARY_LENGTH_GUIDES = {
+    "short": "aproximadamente 100-150 palabras, solo lo esencial",
+    "medium": "aproximadamente 250-350 palabras, balance entre profundidad y brevedad",
+    "detailed": "aproximadamente 500-700 palabras, análisis completo con contexto",
+}
 
-INFORMACIÓN DEL VIDEO:
+UNIFIED_ANALYSIS_PROMPT = """Analiza la siguiente transcripción de vídeo y genera un análisis completo.
+
+INFORMACIÓN DEL VÍDEO:
 - Título: {title}
 - Duración: {duration}
-- Idioma objetivo: {language}
+- Idioma de respuesta: {language_name}
 
 TRANSCRIPCIÓN:
 {transcript}
 
-INSTRUCCIONES:
-- Crea un resumen de longitud {length}: {length_guide}
-- Idioma del resumen: {language_name}
-- Captura la idea principal, argumentos clave y conclusiones
-- Usa lenguaje claro y accesible
-- Estructura el resumen en párrafos coherentes
-- NO uses listas con viñetas en el resumen principal
-- Comienza directamente con el contenido
-
-RESUMEN:"""
-
-SUMMARY_LENGTH_GUIDES = {
-    "short": "aproximadamente 150 palabras, solo lo esencial",
-    "medium": "aproximadamente 300 palabras, balance entre profundidad y brevedad",
-    "detailed": "aproximadamente 600 palabras, análisis completo con contexto",
-}
-
-
-KEY_POINTS_PROMPT = """Analiza esta transcripción y extrae los puntos más importantes.
-
-Título: {title}
-Transcripción: {transcript}
-
-Extrae entre 5 y 8 puntos clave en {language_name}.
-- Sean los insights más valiosos
-- Concisos (máximo 2 líneas cada uno)
-- Empiecen con verbo de acción cuando sea posible
-
-Responde ÚNICAMENTE con JSON válido:
+Genera una respuesta JSON con exactamente esta estructura:
 {{
-  "key_points": [
-    "Punto clave 1",
-    "Punto clave 2"
-  ]
-}}"""
-
-
-CHAPTER_DETECTOR_PROMPT = """Analiza esta transcripción con timestamps y detecta los capítulos temáticos.
-
-Título: {title}
-Transcripción: {transcript_with_timestamps}
-
-Identifica entre 3 y 8 secciones temáticas. Para cada una crea un título en {language_name}.
-
-Responde ÚNICAMENTE con JSON válido:
-{{
+  "summary": "string — {length_guide}. Sin listas con viñetas. Párrafos coherentes. Comienza directamente con el contenido.",
+  "key_points": ["string", "string", ...] — Entre 5 y 8 puntos clave. Los insights más valiosos. Concisos (máx 2 líneas). Empiezan con verbo de acción cuando sea posible.,
   "chapters": [
     {{
-      "start_seconds": 0,
-      "title": "Título del capítulo",
-      "summary": "Breve descripción de 1-2 frases"
+      "start_seconds": number,
+      "title": "string",
+      "summary": "string — 1-2 frases"
     }}
-  ]
-}}"""
+  ] — Entre 3 y 8 secciones temáticas detectadas en la transcripción, o lista vacía [] si no hay suficiente estructura.
+}}
+
+IMPORTANTE: Responde ÚNICAMENTE con el JSON. Sin explicaciones, sin markdown, sin texto adicional."""
+
+
+CHUNK_SUMMARY_PROMPT = """Eres un experto en síntesis. Estás analizando un fragmento de una transcripción más larga.
+
+INFORMACIÓN DEL VÍDEO:
+- Título: {title}
+- Fragmento: {chunk_index} de {total_chunks}
+- Idioma: {language_name}
+
+TRANSCRIPCIÓN DEL FRAGMENTO:
+{transcript}
+
+Genera un resumen conciso de este fragmento (máx 200 palabras) capturando los puntos más importantes.
+Responde SOLO con el texto del resumen, sin JSON ni formato adicional."""
+
+
+FINAL_SYNTHESIS_PROMPT = """Eres un experto en síntesis. A continuación tienes resúmenes parciales de diferentes fragmentos de un vídeo largo. 
+Crea el análisis final unificado.
+
+INFORMACIÓN DEL VÍDEO:
+- Título: {title}
+- Duración: {duration}
+- Idioma de respuesta: {language_name}
+
+RESÚMENES DE FRAGMENTOS:
+{chunk_summaries}
+
+Genera una respuesta JSON con exactamente esta estructura:
+{{
+  "summary": "string — {length_guide}. Síntesis coherente de todos los fragmentos. Sin listas. Párrafos.",
+  "key_points": ["string", ...] — Entre 5 y 8 insights más importantes de TODO el vídeo.,
+  "chapters": [] 
+}}
+
+Responde ÚNICAMENTE con el JSON."""
