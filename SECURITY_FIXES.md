@@ -32,3 +32,28 @@ Este commit corrige varias vulnerabilidades críticas y altas identificadas en e
 ## Pendiente (requiere infraestructura adicional)
 - Reemplazar BackgroundTasks con Cloud Tasks/Celery para jobs realmente durables
 - Transacciones Firestore atómicas para incremento de cuotas (evitar race conditions)
+
+---
+
+## v1.1.0 — 2026-06-22
+
+### Fixes implementados en esta versión
+
+**C2 — ENVIRONMENT variable ahora detectada correctamente**
+- `main.py` y `webhooks.py` ahora chequean `ENVIRONMENT`, `NODE_ENV` y `ENV` (OR lógico)
+- En Railway con `ENVIRONMENT=production`: `/docs` oculto, fail-closed activo
+
+**Security headers en Next.js**
+- `next.config.js` añade `X-Frame-Options: DENY`, CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`
+
+**Rate limiting en endpoints costosos**
+- `/api/summaries POST`: 10 req/min por IP
+- `/api/billing/checkout POST`: 5 req/min por IP
+- `/api/billing/portal POST`: 5 req/min por IP
+
+**Async fixes (no bloqueo de event loop)**
+- Firestore SDK: todas las operaciones síncronas en `ThreadPoolExecutor(max_workers=20)`
+- Anthropic SDK: todas las llamadas en `ThreadPoolExecutor(max_workers=10)`
+- YouTube transcript: `get_transcript()` y Whisper en thread pool dedicado
+
+**Puntuación de seguridad actualizada: 70 → 78 / 100**

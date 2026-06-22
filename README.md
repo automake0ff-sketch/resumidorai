@@ -1,241 +1,227 @@
-# ResumidorAI 🎬
+# ResumidorAI
 
-Resume cualquier video de YouTube con IA en segundos.
+Resume vídeos de YouTube con IA (Claude Sonnet) — resumen, puntos clave y capítulos en segundos.
 
-**Stack:** Next.js 14 · FastAPI · Firebase (Firestore) · Clerk · Claude AI · Vercel · Railway
+**Stack:** Next.js 14 (Vercel) · FastAPI (Railway) · Firestore · Clerk · Stripe · Anthropic Claude
 
 ---
 
 ## Arquitectura
 
 ```
-Usuario → Next.js (Vercel) → FastAPI (Railway)
-                ↓                    ↓
-             Clerk Auth        Firestore (Firebase)
-                                    ↓
-                             Agentes IA (Claude)
-                                    ↓
-                          YouTube Transcript API
+┌─────────────────────┐     HTTPS      ┌──────────────────────────────────────────┐
+│   Frontend (Vercel) │ ◄────────────► │         Backend (Railway)                │
+│   Next.js 14        │                │  FastAPI + uvicorn                        │
+│   Clerk (auth UI)   │                │  ├── /api/summaries  (10 req/min)         │
+└─────────────────────┘                │  ├── /api/billing    (5 req/min)          │
+                                       │  ├── /api/webhooks   (Clerk + Stripe)     │
+          Clerk JWKS ◄─────────────────│  └── /api/health                          │
+                                       │                                            │
+                                       │  Services                                  │
+                                       │  ├── YouTubeService  (transcript pipeline)│
+                                       │  ├── VideoSummaryOrchestrator (Claude AI) │
+                                       │  └── FirestoreClient (run_in_executor)    │
+                                       └──────────────────────────────────────────┘
+                                                        │
+                                              ┌─────────▼──────────┐
+                                              │  Google Firestore   │
+                                              │  Collections:       │
+                                              │  · user_profiles    │
+                                              │  · summary_jobs     │
+                                              │  · user_usage       │
+                                              └────────────────────┘
 ```
 
-## Setup rápido
+### Pipeline de IA
 
-### 1. Clonar
-```bash
-git clone https://github.com/automake0ff-sketch/resumidorai.git
-cd resumidorai
+```
+URL de YouTube
+    │
+    ▼
+YouTubeService.get_transcript()
+    ├── Nivel 1: youtube-transcript-api (subtítulos nativos)
+    ├── Nivel 2: oEmbed metadata
+    └── Nivel 3: yt-dlp + faster-whisper (si ENABLE_WHISPER_FALLBACK=true)
+    │
+    ▼
+VideoSummaryOrchestrator.process()
+    ├── Transcript ≤ 14.000 chars → 1 llamada Claude Sonnet (JSON estructurado)
+    └── Transcript > 14.000 chars → Chunking + map-reduce
+        ├── N chunks × Claude Haiku (paralelo)
+        └── 1 síntesis final × Claude Sonnet
+    │
+    ▼
+{ summary, key_points, chapters }
 ```
 
-### 2. Firebase / Firestore
-1. Crea un proyecto en [console.firebase.google.com](https://console.firebase.google.com)
-2. **Compilación → Firestore Database** → Crear base de datos → modo producción
-3. ⚙️ **Configuración del proyecto → Cuentas de servicio** → **Generar nueva clave privada** → descarga el `.json`
-4. Ese archivo **no se sube al repo nunca**. Su contenido completo (en una sola línea) va como variable de entorno `FIREBASE_SERVICE_ACCOUNT_JSON` en el paso siguiente.
+---
 
-### 3. Backend
+## Instalación local
+
+### Requisitos
+
+- Python 3.12+
+- Node.js 20+
+- Cuenta de Firebase (Firestore)
+- Cuenta de Clerk
+- Cuenta de Stripe
+- API key de Anthropic
+
+### Backend
+
 ```bash
 cd backend
 pip install -r requirements.txt
-
-# Variables necesarias en .env:
-# ANTHROPIC_API_KEY, FIREBASE_SERVICE_ACCOUNT_JSON (el JSON completo
-# de la cuenta de servicio, en una sola línea), CLERK_ISSUER_URL
-
-uvicorn app.main:app --reload --port 8000
+cp .env.example .env
+# Edita .env con tus credenciales
+uvicorn app.main:app --reload
 ```
 
-### 4. Frontend
+### Frontend
+
 ```bash
 cd frontend
 npm install
-
-# Crea .env.local con:
-# NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
-# CLERK_SECRET_KEY=sk_test_...
-# NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
-# NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
-# NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
-# NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
-# NEXT_PUBLIC_API_URL=http://localhost:8000
-
+cp .env.example .env.local
+# Edita .env.local
 npm run dev
 ```
 
-### 5. Clerk Webhook (sync usuarios)
-En [Clerk Dashboard](https://dashboard.clerk.com):
-- Webhooks → Add Endpoint
-- URL: `https://tu-backend.railway.app/api/webhooks/clerk`
-- Eventos: `user.created`, `user.updated`
+---
+
+## Variables de Entorno
+
+### Backend (`backend/.env`)
+
+| Variable | Descripción | Requerida |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | API key de Anthropic | ✅ |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | JSON completo de cuenta de servicio Firebase | ✅ |
+| `CLERK_ISSUER_URL` | URL del issuer de Clerk (ej: `https://clerk.your-app.com`) | ✅ |
+| `CLERK_WEBHOOK_SECRET` | Secret del webhook de Clerk (empieza con `whsec_`) | ✅ |
+| `STRIPE_SECRET_KEY` | Secret key de Stripe (`sk_live_...` o `sk_test_...`) | ✅ |
+| `STRIPE_WEBHOOK_SECRET` | Secret del webhook de Stripe (`whsec_...`) | ✅ |
+| `STRIPE_PRODUCT_STARTER` | Product ID del plan Starter | ✅ |
+| `STRIPE_PRODUCT_PRO` | Product ID del plan Pro | ✅ |
+| `ENVIRONMENT` | `production` para ocultar `/docs` y activar fail-closed | ✅ en prod |
+| `CORS_ORIGINS` | URLs del frontend separadas por coma | ✅ en prod |
+| `FRONTEND_URL` | URL base del frontend para redirects de Stripe | ✅ en prod |
+| `CLERK_AUDIENCE` | Audience del JWT de Clerk (si está configurado) | Opcional |
+| `CLERK_AUTHORIZED_PARTY` | Dominio autorizado para el claim `azp` | Opcional |
+| `YOUTUBE_DATA_API_KEY` | YouTube Data API v3 (metadata más precisa) | Opcional |
+| `ENABLE_WHISPER_FALLBACK` | `true` para activar faster-whisper como fallback | Opcional |
+| `WHISPER_MODEL_SIZE` | `base`, `small`, `medium` (default: `base`) | Opcional |
+
+### Frontend (`frontend/.env.local`)
+
+| Variable | Descripción |
+|---|---|
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Publishable key de Clerk |
+| `CLERK_SECRET_KEY` | Secret key de Clerk |
+| `NEXT_PUBLIC_API_URL` | URL del backend (ej: `https://resumidorai-production.up.railway.app`) |
+| `NEXT_PUBLIC_SITE_URL` | URL pública del frontend (para SEO y og:image) |
 
 ---
 
-## Deploy a producción
+## Despliegue
 
-### Backend → Railway
+### Backend (Railway)
 
-Este monorepo tiene `backend/`, `frontend/` y otras carpetas. Railway necesita saber explícitamente dónde está el backend FastAPI:
+1. Conecta el repositorio a Railway
+2. Establece **Root Directory = `backend`** en la configuración del servicio (Dashboard > Settings > Source)
+3. Añade todas las variables de entorno del backend
+4. Railway usa `railway.toml` automáticamente (start command, health check, restart policy)
 
-1. En [railway.com](https://railway.com) → **New Project** → **Deploy from GitHub repo** → selecciona este repo
-2. En el servicio creado → **Settings → Root Directory** → escribe `backend` (sin esto, Railway intenta analizar la raíz del repo, no encuentra ningún lenguaje reconocible y el deploy falla con un error de Railpack)
-3. **Settings → Networking** → **Generate Domain** para obtener una URL pública `https://xxx.up.railway.app`
-4. Variables en **Variables**:
-```
-ANTHROPIC_API_KEY=sk-ant-...
+> ⚠️ `ENVIRONMENT=production` debe estar configurado en Railway para ocultar `/docs` y activar protecciones de producción.
 
-FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...",...}
-# El JSON completo de la cuenta de servicio de Firebase, en una sola línea.
-# Se obtiene en Firebase Console -> Configuración del proyecto ->
-# Cuentas de servicio -> Generar nueva clave privada.
+### Frontend (Vercel)
 
-CLERK_ISSUER_URL=https://discrete-reptile-59.clerk.accounts.dev
-CLERK_WEBHOOK_SECRET=whsec_...   # del Webhook de Clerk, ver sección siguiente
+1. Conecta el repositorio a Vercel
+2. Establece **Root Directory = `frontend`** en la configuración del proyecto
+3. Añade las variables de entorno del frontend
 
-YOUTUBE_DATA_API_KEY=...          # opcional, mejora duración/metadata
-ENABLE_WHISPER_FALLBACK=true
-WHISPER_MODEL_SIZE=base
-# ⚠️ El plan gratuito de Railway da 512MB de RAM. faster-whisper + sus
-# dependencias (ctranslate2, av) pueden agotar esa memoria al cargar el
-# modelo la primera vez que se usa el fallback, especialmente si el backend
-# ya está procesando resúmenes con Anthropic en paralelo. Si ves el servicio
-# reiniciarse sin motivo aparente (OOM kill), pon ENABLE_WHISPER_FALLBACK=false
-# o sube de plan en Railway antes de reactivarlo.
-#
-# ⚠️ YouTube bloquea con frecuencia las descargas de audio (yt-dlp) desde
-# IPs de datacenter como las de Railway, con el error "Sign in to confirm
-# you're not a bot". El código ya usa el cliente 'android' de YouTube en
-# vez del 'web' por defecto, que reduce bastante la probabilidad de
-# bloqueo, pero no es una garantía: YouTube puede empezar a bloquearlo
-# también en cualquier momento. Esto solo afecta a videos SIN subtítulos
-# (si el video tiene CC, youtube-transcript-api los lee directamente sin
-# necesitar descargar audio en absoluto). Si el bloqueo es persistente y
-# necesitas que funcione siempre, la única solución robusta es un proxy
-# residencial de pago (ej. Webshare, Bright Data) configurado en yt-dlp,
-# que está fuera del alcance de este MVP.
-#
-# ⚠️ MANTENIMIENTO: YouTube cambia el formato interno de su reproductor
-# con frecuencia, y versiones antiguas de yt-dlp dejan de poder leerlo
-# (error típico: "Failed to extract any player response"). El proyecto
-# yt-dlp publica actualizaciones muy seguido para seguirle el paso. Si
-# el fallback de Whisper empieza a fallar con ese mensaje, comprueba la
-# última versión en https://github.com/yt-dlp/yt-dlp/releases y actualiza
-# el pin en requirements.txt (yt-dlp==X.Y.Z).
+### Firestore — Índices requeridos
 
-STRIPE_SECRET_KEY=sk_test_...     # o sk_live_... en producción real
-STRIPE_WEBHOOK_SECRET=whsec_...   # del Webhook de Stripe, ver sección siguiente
-STRIPE_PRODUCT_STARTER=prod_UiLxrL4q3jo0d5
-STRIPE_PRODUCT_PRO=prod_UiLxoqpYqemCDN
+Crea los siguientes índices compuestos en Firebase Console (Firestore > Indexes):
 
-CORS_ORIGINS=https://tu-app.vercel.app
-FRONTEND_URL=https://tu-app.vercel.app
-```
-5. Copia la URL pública que te da Railway para este servicio — la necesitas para el siguiente paso
+| Colección | Campos | Orden |
+|---|---|---|
+| `summary_jobs` | `clerk_user_id` ASC, `created` DESC | Compuesto |
+| `user_usage` | `clerk_user_id` ASC, `month` ASC | Compuesto |
 
-**Conecta el frontend al backend:**
-En Vercel → **Settings → Environment Variables** → actualiza:
-```
-NEXT_PUBLIC_API_URL=https://tu-backend.up.railway.app
-```
-Y haz **Redeploy**. Sin este paso exacto, el frontend sigue intentando llamar a `localhost:8000` (que no existe en el navegador del usuario) y verás el error `Failed to fetch` al intentar resumir un video.
-
-### Webhooks (necesarios para que los pagos y el registro funcionen)
-
-**Clerk** → [Dashboard](https://dashboard.clerk.com) → Webhooks → Add Endpoint:
-- URL: `https://tu-backend.up.railway.app/api/webhooks/clerk`
-- Eventos: `user.created`, `user.updated`, `user.deleted`
-- Copia el "Signing Secret" → pégalo en `CLERK_WEBHOOK_SECRET` en Railway
-
-**Stripe** → [Dashboard](https://dashboard.stripe.com/webhooks) → Add endpoint:
-- URL: `https://tu-backend.up.railway.app/api/webhooks/stripe`
-- Eventos: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
-- Copia el "Signing secret" → pégalo en `STRIPE_WEBHOOK_SECRET` en Railway
-
-### Frontend → Vercel
-
-**Paso crítico — Root Directory:** este repo es un monorepo (`backend/` + `frontend/`). Vercel necesita saber que el proyecto Next.js vive en `frontend/`, y esto **solo se configura en el dashboard**, no en `vercel.json`:
-
-1. En [vercel.com](https://vercel.com) → tu proyecto → **Settings → General**
-2. **Root Directory** → click "Edit" → selecciona `frontend`
-3. Guarda. Esto hace que Vercel ejecute `npm install` y `npm run build` ya dentro de `frontend/`, sin necesitar `cd frontend &&` en ningún comando (de hecho, poner `cd frontend &&` ahí es la causa más común del error `exit code 1`, porque con Root Directory configurado el comando ya se ejecuta en esa carpeta).
-
-Luego, en **Settings → Environment Variables**, añade:
-```
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
-CLERK_SECRET_KEY=sk_test_...
-NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
-NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
-NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
-NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
-NEXT_PUBLIC_API_URL=https://tu-backend.railway.app
-```
-
-Redeploy (Deployments → ⋯ → Redeploy) después de cambiar el Root Directory o las env vars.
-
-> ⚠️ **Error `MIDDLEWARE_INVOCATION_FAILED` / `Missing publishableKey`**: significa que `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` no llegó al middleware en runtime. Pasos para resolverlo:
-> 1. Confirma que las 7 variables están en **Settings → Environment Variables**, no solo guardadas como borrador.
-> 2. Verifica que estén marcadas para el environment correcto: si el deploy que falla es de producción (rama `main`), la variable debe tener tickado **Production** (y/o **Preview** si pruebas desde un PR). Vercel permite limitarlas por environment y es fácil dejarlas solo en uno.
-> 3. **Las env vars no se aplican a deploys ya existentes.** Después de añadirlas o editarlas, ve a **Deployments**, abre el deploy afectado → `⋯` → **Redeploy**. Un simple refresh de la página no sirve.
-> 4. Las claves `pk_test_...` y `sk_test_...` deben copiarse completas y sin espacios; un solo carácter de menos provoca este mismo error.
-
-> ⚠️ **Error `Failed to fetch` al pegar una URL y darle a "Resumir"**: el navegador no encuentra ningún backend al que llamar. Casi siempre es una de estas dos causas:
-> 1. `NEXT_PUBLIC_API_URL` en Vercel sigue apuntando a `http://localhost:8000` o a un placeholder tipo `https://tu-backend.railway.app` — actualízala con la URL real que Railway te dio para el servicio del backend, y haz Redeploy.
-> 2. El backend FastAPI directamente no está desplegado todavía. Pegar la URL en el navegador (`https://tu-backend.up.railway.app/api/health`) debe devolver `{"status":"ok",...}`; si da timeout o 404, el backend no está corriendo y hay que completar el paso "Backend → Railway" de arriba.
+> Sin estos índices, las queries con `where` + `order_by` fallarán en producción.
 
 ---
 
-## Estructura del proyecto
+## Tests
 
-```
-resumidorai/
-├── backend/
-│   ├── app/
-│   │   ├── main.py                   # FastAPI entry point
-│   │   ├── agents/summary_agent.py   # 4 agentes IA + orquestador
-│   │   ├── prompts/prompts.py        # Prompts optimizados
-│   │   ├── api/
-│   │   │   ├── summaries.py          # CRUD endpoints
-│   │   │   ├── billing.py            # Checkout y portal de Stripe
-│   │   │   ├── webhooks.py           # Clerk + Stripe sync
-│   │   │   └── health.py
-│   │   ├── auth/clerk.py             # Verificación JWT
-│   │   ├── db/firestore_client.py    # Cliente Firestore (Firebase Admin SDK)
-│   │   ├── services/
-│   │   │   ├── youtube.py            # Extracción transcripts + Whisper fallback
-│   │   │   ├── stripe_service.py     # Checkout, portal, resolución de planes
-│   │   │   └── job_processor.py      # Pipeline completo
-│   │   └── models/schemas.py
-│   ├── requirements.txt
-│   └── Dockerfile
-├── frontend/
-│   └── src/
-│       ├── app/
-│       │   ├── page.tsx              # Landing
-│       │   ├── pricing/page.tsx      # Precios
-│       │   ├── dashboard/
-│       │   │   ├── layout.tsx        # Nav del dashboard
-│       │   │   └── page.tsx          # App principal
-│       │   ├── sign-in/[[...sign-in]]/page.tsx
-│       │   └── sign-up/[[...sign-up]]/page.tsx
-│       ├── lib/api.ts                # Cliente API tipado
-│       ├── middleware.ts             # Auth middleware Clerk
-│       └── styles/globals.css
-├── vercel.json
-├── railway.toml
-└── README.md
+```bash
+cd backend
+python -m pytest tests/ -v
+# 49 tests, 0 failures
 ```
 
-## Planes
+Cobertura de tests:
+- Validación de URLs y SSRF (`test_schemas.py`)
+- Extracción de video ID y parsing de duración (`test_youtube_service.py`)
+- Parsing de filtros Firestore y serialización (`test_firestore_client.py`)
+- Prompts de IA, caching, y lógica de chunking (`test_prompts.py`)
 
-| Plan | Resúmenes/mes | Precio |
-|------|--------------|--------|
-| Free | 5 | $0 |
-| Starter | 50 | $9/mes |
-| Pro | 200 | $29/mes |
+---
 
-## Agentes IA
+## Solución de Problemas
 
-| Agente | Descripción |
-|--------|-------------|
-| `TranscriptCleanerAgent` | Limpia y normaliza el texto bruto de YouTube |
-| `SummaryGeneratorAgent` | Genera resumen en idioma y longitud seleccionados |
-| `KeyPointsAgent` | Extrae 5-8 insights principales en JSON |
-| `ChapterDetectorAgent` | Detecta secciones temáticas con timestamps |
+### `/docs` visible en producción
+Asegúrate de que `ENVIRONMENT=production` esté configurado en Railway (no `NODE_ENV` ni `ENV`).
+
+### Error "FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido"
+El JSON exportado de Firebase contiene saltos de línea literales en el campo `private_key`. El cliente lo corrige automáticamente, pero si persiste, usa `jq -c` para comprimirlo: `cat service-account.json | jq -c`.
+
+### Transcripción falla con "YouTube está bloqueando"
+Las IPs de Railway son detectadas como bots por YouTube para algunos vídeos. Usa vídeos con subtítulos/CC activados. Si necesitas Whisper para todos los vídeos, considera un proxy residencial o desplegar en un servidor con IP doméstica.
+
+### Jobs quedan en "Procesando" para siempre
+El dashboard hace polling automático durante 10 minutos. Si supera ese tiempo, el job se marca como fallado. Revisa los logs de Railway para el error real.
+
+### Race condition en cuotas
+Con tráfico muy alto, dos requests simultáneas del mismo usuario pueden superar el límite antes de que el contador se actualice. Esta limitación es conocida y se resolverá en v1.2 con Firestore Transactions.
+
+---
+
+## Costes estimados de IA (Anthropic Claude)
+
+| Escenario | Coste actual | Con prompt caching | Con llamada unificada + caching |
+|---|---|---|---|
+| 100 usuarios (3 trial) | $78 | $48 | $30 |
+| 1.000 usuarios (10 avg) | $2.606 | $1.615 | $900 |
+| 10.000 usuarios (10 avg) | $26.064 | $16.150 | $9.000 |
+| Plan Starter (50 resúm) | $13,03/usuario | $8,07 | $4,50 |
+| Plan Pro (200 resúm) | $52,12/usuario | $32,30 | $18,00 |
+
+> ⚠️ El plan Pro ($29/mes ingreso) tiene coste de $52 sin optimizaciones. Con llamada unificada + prompt caching: ~$18 → margen positivo.
+
+---
+
+## Roadmap
+
+### v1.2 (próximo)
+- [ ] Firestore Transactions para contador de cuotas atómico (race condition fix)
+- [ ] Redis worker para jobs durables (reemplaza BackgroundTasks)
+- [ ] Caché de resúmenes: mismo video_id → resultado cacheado
+
+### v1.3
+- [ ] Extensión de Chrome/Firefox
+- [ ] Export a Notion, Obsidian, Markdown
+- [ ] Búsqueda semántica en historial (Firestore Vector)
+- [ ] Compartir resúmenes con URL pública
+
+### v2.0
+- [ ] Plan Agency/Team con múltiples usuarios
+- [ ] API pública (Zapier, Make)
+- [ ] Resúmenes de playlists completas
+
+---
+
+## Licencia
+
+Privativo — © 2026 ResumidorAI
