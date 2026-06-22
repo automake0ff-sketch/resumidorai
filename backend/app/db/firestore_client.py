@@ -1,19 +1,17 @@
 """
 Cliente de Firestore para ResumidorAI.
 
-Reemplaza a PocketBase. Usa el SDK Admin de Firebase (firebase-admin),
-que se autentica con una cuenta de servicio (Service Account JSON) y tiene
-privilegios totales sobre Firestore -- no aplica reglas de seguridad de
-cliente, así que toda la validación de "quién puede leer/escribir qué"
-vive en el backend (en los endpoints de FastAPI), no en Firestore mismo.
+Usa el SDK Admin de Firebase (firebase-admin) con todas las operaciones
+síncronas del SDK envueltas en asyncio.get_event_loop().run_in_executor()
+para no bloquear el event loop de FastAPI/uvicorn.
 
-Credenciales: la cuenta de servicio se carga desde una variable de entorno
-con el JSON completo (FIREBASE_SERVICE_ACCOUNT_JSON), nunca desde un archivo
-en el repo. Esto evita que la clave privada termine en git por accidente.
+Credenciales: la cuenta de servicio se carga desde FIREBASE_SERVICE_ACCOUNT_JSON.
 """
+import asyncio
 import os
 import json
 import logging
+import functools
 from typing import Any
 
 import firebase_admin
@@ -22,21 +20,29 @@ from firebase_admin import credentials, firestore
 logger = logging.getLogger(__name__)
 
 _db = None
+_executor = None  # ThreadPoolExecutor for Firestore sync calls
+
+
+def _get_executor():
+    """Lazy ThreadPoolExecutor — reuses the same pool across calls."""
+    global _executor
+    if _executor is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="firestore")
+    return _executor
+
+
+async def _run_sync(fn, *args, **kwargs):
+    """Run a blocking Firestore call in a thread pool, freeing the event loop."""
+    loop = asyncio.get_event_loop()
+    if kwargs:
+        fn = functools.partial(fn, *args, **kwargs)
+        return await loop.run_in_executor(_get_executor(), fn)
+    return await loop.run_in_executor(_get_executor(), fn, *args)
 
 
 def _escape_newlines_inside_json_strings(text: str) -> str:
-    """
-    Recorre el texto carácter a carácter, sabiendo en todo momento si está
-    dentro de un valor string de JSON o no, y solo convierte saltos de línea
-    reales a '\n' escapado cuando está DENTRO de un string. Los saltos de
-    línea que dan formato/indentación al documento JSON en sí (fuera de
-    cualquier string) se dejan intactos.
-
-    Esto es necesario porque el .json de cuenta de servicio que descarga
-    Firebase tiene el campo private_key con saltos de línea reales de PEM,
-    y al pegarlo como variable de entorno de una pieza (sin re-serializarlo)
-    el resultado no es JSON válido tal cual.
-    """
+    """Fix raw newlines inside JSON string values (common in Firebase service account JSON)."""
     result = []
     in_string = False
     escaped = False
@@ -62,55 +68,33 @@ def _escape_newlines_inside_json_strings(text: str) -> str:
     return "".join(result)
 
 
-async def init_pocketbase():
-    """
-    Se mantiene el nombre 'init_pocketbase' por compatibilidad con el resto
-    del código (main.py la llama en el lifespan de FastAPI) -- internamente
-    ahora inicializa Firestore. Renombrar todos los call sites no aporta
-    nada funcional y aumenta el riesgo de un fix a medias.
-    """
+async def init_firestore():
+    """Initialize Firestore connection. Called once at app startup."""
     global _db
 
     raw_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
     if not raw_json:
         raise RuntimeError(
             "FIREBASE_SERVICE_ACCOUNT_JSON no está configurada. "
-            "Pega el JSON completo de la cuenta de servicio de Firebase "
-            "(Project Settings -> Service Accounts -> Generate new private key) "
-            "como variable de entorno. Ejemplo: { \"type\": \"service_account\", ... }"
+            "Pega el JSON completo de la cuenta de servicio de Firebase."
         )
 
     service_account_info = {}
     try:
         service_account_info = json.loads(raw_json)
     except json.JSONDecodeError:
-        # El archivo .json que descarga Firebase tiene saltos de línea REALES
-        # dentro del campo private_key (no \n escapado). Eso es JSON inválido
-        # tal cual si se pega como una sola variable de entorno -- pero es
-        # exactamente como cualquier persona lo pegaría copiando el archivo
-        # sin más. Reintentamos saneando solo los saltos de línea que caen
-        # DENTRO de un valor string (los de fuera son el formato/indentación
-        # del propio documento JSON y no deben tocarse).
         try:
             sanitized = _escape_newlines_inside_json_strings(raw_json)
             service_account_info = json.loads(sanitized)
             logger.warning(
-                "FIREBASE_SERVICE_ACCOUNT_JSON tenía saltos de línea sin escapar "
-                "dentro de algún valor (típico al pegar el .json de Firebase tal "
-                "cual); se corrigió automáticamente. Considera re-guardar la "
-                "variable ya saneada para evitar este aviso en el futuro."
+                "FIREBASE_SERVICE_ACCOUNT_JSON tenía saltos de línea sin escapar; "
+                "se corrigió automáticamente."
             )
         except json.JSONDecodeError as e:
-            raise RuntimeError(
-                f"FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido ni siquiera "
-                f"tras intentar corregir saltos de línea: {e}"
-            )
+            raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido: {e}")
 
     if not service_account_info.get("type") == "service_account":
-        raise ValueError(
-            "FIREBASE_SERVICE_ACCOUNT_JSON debe ser un JSON de cuenta de servicio válido "
-            "y contener el campo \"type\" con valor \"service_account\"."
-        )
+        raise ValueError("FIREBASE_SERVICE_ACCOUNT_JSON debe ser un JSON de cuenta de servicio válido.")
 
     if not firebase_admin._apps:
         cred = credentials.Certificate(service_account_info)
@@ -120,62 +104,62 @@ async def init_pocketbase():
     logger.info("Firestore conectado correctamente")
 
 
+# Keep old name as alias for any stale imports
+init_pocketbase = init_firestore
+
+
 def _get_db():
     if _db is None:
-        raise RuntimeError("Firestore no inicializado. Llama a init_pocketbase() primero.")
+        raise RuntimeError("Firestore no inicializado. Llama a init_firestore() primero.")
     return _db
 
 
-def _esc(value: str) -> str:
-    """
-    Se mantiene por compatibilidad con el código que llama a _esc() antes de
-    construir filtros de texto (heredado de la sintaxis de filtros de
-    PocketBase). Firestore no tiene ese problema: las queries usan
-    comparaciones estructuradas (where("campo", "==", valor)), no strings
-    interpolados, así que no hay riesgo de inyección que escapar. La función
-    es un passthrough que existe solo para no tener que tocar las llamadas
-    existentes en job_processor.py, webhooks.py, etc.
-    """
-    return value
-
-
-# ─────────────────────────────────────────────
-# Operaciones CRUD genéricas, con la misma forma que las de pocketbase.py
-# para minimizar cambios en el resto del código.
-# ─────────────────────────────────────────────
+# ─── Async CRUD ─────────────────────────────────────────────────────────────
 
 async def pb_create(collection: str, data: dict) -> dict:
     db = _get_db()
-    doc_ref = db.collection(collection).document()
-    payload = {**data, "created": firestore.SERVER_TIMESTAMP}
-    doc_ref.set(payload)
-    snapshot = doc_ref.get()
-    result = snapshot.to_dict() or {}
-    result["id"] = doc_ref.id
-    result["created"] = _serialize_timestamp(result.get("created"))
-    return result
+
+    def _create():
+        doc_ref = db.collection(collection).document()
+        payload = {**data, "created": firestore.SERVER_TIMESTAMP}
+        doc_ref.set(payload)
+        snapshot = doc_ref.get()
+        result = snapshot.to_dict() or {}
+        result["id"] = doc_ref.id
+        result["created"] = _serialize_timestamp(result.get("created"))
+        return result
+
+    return await _run_sync(_create)
 
 
 async def pb_update(collection: str, record_id: str, data: dict) -> dict:
     db = _get_db()
-    doc_ref = db.collection(collection).document(record_id)
-    doc_ref.update(data)
-    snapshot = doc_ref.get()
-    result = snapshot.to_dict() or {}
-    result["id"] = record_id
-    result["created"] = _serialize_timestamp(result.get("created"))
-    return result
+
+    def _update():
+        doc_ref = db.collection(collection).document(record_id)
+        doc_ref.update(data)
+        snapshot = doc_ref.get()
+        result = snapshot.to_dict() or {}
+        result["id"] = record_id
+        result["created"] = _serialize_timestamp(result.get("created"))
+        return result
+
+    return await _run_sync(_update)
 
 
 async def pb_get(collection: str, record_id: str) -> dict | None:
     db = _get_db()
-    snapshot = db.collection(collection).document(record_id).get()
-    if not snapshot.exists:
-        return None
-    result = snapshot.to_dict() or {}
-    result["id"] = record_id
-    result["created"] = _serialize_timestamp(result.get("created"))
-    return result
+
+    def _get():
+        snapshot = db.collection(collection).document(record_id).get()
+        if not snapshot.exists:
+            return None
+        result = snapshot.to_dict() or {}
+        result["id"] = record_id
+        result["created"] = _serialize_timestamp(result.get("created"))
+        return result
+
+    return await _run_sync(_get)
 
 
 async def pb_list(
@@ -186,47 +170,39 @@ async def pb_list(
     per_page: int = 20,
     expand: str = "",
 ) -> dict:
-    """
-    'filter' aquí sigue el formato simple usado en el resto del código:
-    'campo="valor"' o 'campo1="valor1"&&campo2="valor2"' (heredado de la
-    sintaxis de filtros de PocketBase). Se parsea a queries .where() de
-    Firestore. No soporta operadores distintos de igualdad porque el
-    código existente solo los necesita así.
-    """
     db = _get_db()
-    query = db.collection(collection)
 
-    for field, value in _parse_filter(filter):
-        query = query.where(field, "==", value)
+    def _list():
+        query = db.collection(collection)
 
-    # Firestore no soporta count() barato en todas las versiones del SDK de
-    # forma uniforme: pedimos solo lo necesario y devolvemos totalItems con
-    # el conteo de la página actual cuando per_page=1 se usa típicamente
-    # para checks de "¿existe algo?" más que para paginación real.
-    if sort:
-        if sort.startswith("-"):
-            field = sort[1:]
-            query = query.order_by(field, direction=firestore.Query.DESCENDING)
-        else:
-            query = query.order_by(sort, direction=firestore.Query.ASCENDING)
+        for field, value in _parse_filter(filter):
+            query = query.where(field, "==", value)
 
-    docs = list(query.limit(per_page).offset((page - 1) * per_page).stream())
+        if sort:
+            if sort.startswith("-"):
+                field = sort[1:]
+                query = query.order_by(field, direction=firestore.Query.DESCENDING)
+            else:
+                query = query.order_by(sort, direction=firestore.Query.ASCENDING)
 
-    items = []
-    for doc in docs:
-        item = doc.to_dict() or {}
-        item["id"] = doc.id
-        item["created"] = _serialize_timestamp(item.get("created"))
-        items.append(item)
+        docs = list(query.limit(per_page).offset((page - 1) * per_page).stream())
 
-    # totalItems real (sin paginar) -- necesario para el conteo de por vida
-    # del plan trial. Se pide aparte porque .stream() ya vino limitado arriba.
-    count_query = db.collection(collection)
-    for field, value in _parse_filter(filter):
-        count_query = count_query.where(field, "==", value)
-    total = count_query.count().get()[0][0].value
+        items = []
+        for doc in docs:
+            item = doc.to_dict() or {}
+            item["id"] = doc.id
+            item["created"] = _serialize_timestamp(item.get("created"))
+            items.append(item)
 
-    return {"items": items, "page": page, "perPage": per_page, "totalItems": total}
+        # Count query (separate round-trip; needed for trial quota)
+        count_query = db.collection(collection)
+        for field, value in _parse_filter(filter):
+            count_query = count_query.where(field, "==", value)
+        total = count_query.count().get()[0][0].value
+
+        return {"items": items, "page": page, "perPage": per_page, "totalItems": total}
+
+    return await _run_sync(_list)
 
 
 async def pb_get_first(collection: str, filter: str) -> dict | None:
@@ -237,7 +213,7 @@ async def pb_get_first(collection: str, filter: str) -> dict | None:
 
 async def pb_delete(collection: str, record_id: str):
     db = _get_db()
-    db.collection(collection).document(record_id).delete()
+    await _run_sync(db.collection(collection).document(record_id).delete)
 
 
 async def pb_upsert(collection: str, filter: str, data: dict) -> dict:
@@ -248,7 +224,7 @@ async def pb_upsert(collection: str, filter: str, data: dict) -> dict:
 
 
 def _parse_filter(filter: str) -> list[tuple[str, str]]:
-    """Parsea 'campo="valor"&&campo2="valor2"' a [(campo, valor), ...]."""
+    """Parse 'field="value"&&field2="value2"' to [(field, value), ...]."""
     if not filter:
         return []
     pairs = []
@@ -263,13 +239,13 @@ def _parse_filter(filter: str) -> list[tuple[str, str]]:
 
 
 def _serialize_timestamp(value: Any) -> str | None:
-    """
-    Convierte un Timestamp de Firestore a ISO 8601 string, igual que
-    devolvía PocketBase, para no romper el resto del código que espera
-    strings en el campo 'created'.
-    """
     if value is None:
         return None
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+# Compatibility alias
+def _esc(value: str) -> str:
+    return value
