@@ -10,11 +10,19 @@ from app.services.stripe_service import plan_from_product_id
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Canonical production check — ENVIRONMENT is set in Railway/Vercel
+def _is_production() -> bool:
+    return (
+        os.environ.get("ENVIRONMENT") == "production"
+        or os.environ.get("NODE_ENV") == "production"
+        or os.environ.get("ENV") == "production"
+    )
+
 
 def _require_webhook_secret(secret: str, provider: str) -> None:
-    """Fail-closed: in production, missing webhook secret returns 500/503."""
+    """Fail-closed: in production, missing webhook secret returns 503."""
     if not secret:
-        if os.environ.get("NODE_ENV") == "production" or os.environ.get("ENV") == "production":
+        if _is_production():
             raise HTTPException(
                 status_code=503,
                 detail=f"{provider} webhook misconfigurado: variable de entorno no esta definida"
@@ -101,11 +109,7 @@ async def clerk_webhook(
 @router.post("/stripe")
 async def stripe_webhook(request: Request, stripe_signature: str = Header(None, alias="stripe-signature")):
     """
-    Activa/actualiza el plan del usuario tras eventos de Stripe:
-    - checkout.session.completed: primera suscripcion, guarda stripe_customer_id y activa el plan
-    - customer.subscription.updated: cambios de plan (upgrade/downgrade) o renovacion
-    - customer.subscription.deleted: cancelacion, revoca el acceso
-
+    Activa/actualiza el plan del usuario tras eventos de Stripe.
     FAIL-CLOSED: Si falta el secreto en producción, rechaza todos los eventos.
     """
     body = await request.body()
