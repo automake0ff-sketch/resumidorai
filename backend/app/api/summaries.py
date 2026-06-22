@@ -1,5 +1,7 @@
 import logging
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.models.schemas import SummaryRequest, SummaryResponse, SummaryResult, UsageStats, JobStatus
 from app.services.job_processor import (
     create_job, process_job, get_job, get_user_jobs,
@@ -9,6 +11,7 @@ from app.auth.clerk import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 def _map_job(job: dict) -> SummaryResult:
@@ -31,18 +34,14 @@ def _map_job(job: dict) -> SummaryResult:
 
 
 @router.post("", response_model=SummaryResponse, status_code=202)
+@limiter.limit("10/minute")
 async def submit_summary(
-    request: SummaryRequest,
+    request: Request,
+    body: SummaryRequest,
     background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
 ):
-    """Envia un video para resumir. El procesamiento ocurre en background.
-    
-    NOTA: La verificacion de cuotas ocurre en submit_summary antes de crear el job.
-    Esto es vulnerable a race conditions en alta concurrencia. Para mayor seguridad,
-    considerar usar transacciones Firestore con estado 'quota_reserved'/'quota_consumed'.
-    """
-    # Auto-create profile if webhook missed it
+    """Submit a video for summarization. Processing happens in background."""
     await ensure_user_profile(user["user_id"], user.get("email", ""), user.get("name", ""))
 
     usage = await get_usage(user["user_id"])
@@ -50,14 +49,14 @@ async def submit_summary(
         if usage["plan"] in ("trial", "none"):
             raise HTTPException(
                 status_code=402,
-                detail="Necesitas una suscripcion activa para seguir resumiendo videos. Elige un plan en /pricing.",
+                detail="Necesitas una suscripción activa para seguir resumiendo videos. Elige un plan en /pricing.",
             )
         raise HTTPException(
             status_code=429,
-            detail=f"Limite mensual alcanzado ({usage['summaries_limit']} resumenes). Mejora tu plan en /pricing.",
+            detail=f"Límite mensual alcanzado ({usage['summaries_limit']} resúmenes). Mejora tu plan en /pricing.",
         )
 
-    job_id = await create_job(clerk_user_id=user["user_id"], request=request)
+    job_id = await create_job(clerk_user_id=user["user_id"], request=body)
     background_tasks.add_task(process_job, job_id)
     logger.info(f"Job {job_id} created for user {user['user_id']}")
     return SummaryResponse(job_id=job_id, status=JobStatus.pending)
@@ -65,13 +64,13 @@ async def submit_summary(
 
 @router.get("/usage/me", response_model=UsageStats)
 async def get_my_usage(user: dict = Depends(get_current_user)):
-    """Devuelve el uso actual del usuario este mes."""
+    """Returns current user usage for this month."""
     return await get_usage(user["user_id"])
 
 
 @router.get("/{job_id}", response_model=SummaryResult)
 async def get_summary(job_id: str, user: dict = Depends(get_current_user)):
-    """Obtiene el resultado de un resumen."""
+    """Get the result of a summary job."""
     job = await get_job(job_id=job_id, clerk_user_id=user["user_id"])
     if not job:
         raise HTTPException(status_code=404, detail="Resumen no encontrado")
@@ -84,14 +83,14 @@ async def list_summaries(
     per_page: int = Query(default=20, le=100),
     user: dict = Depends(get_current_user),
 ):
-    """Lista los resumenes del usuario, mas recientes primero."""
+    """List user summaries, newest first."""
     jobs = await get_user_jobs(clerk_user_id=user["user_id"], page=page, per_page=per_page)
     return [_map_job(j) for j in jobs]
 
 
 @router.delete("/{job_id}", status_code=204)
 async def delete_summary(job_id: str, user: dict = Depends(get_current_user)):
-    """Elimina un resumen del historial."""
+    """Delete a summary from history."""
     deleted = await delete_job(job_id=job_id, clerk_user_id=user["user_id"])
     if not deleted:
         raise HTTPException(status_code=404, detail="No encontrado o sin permiso")
