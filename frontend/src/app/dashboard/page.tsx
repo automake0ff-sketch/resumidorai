@@ -92,7 +92,7 @@ export default function DashboardPage() {
         } catch {
           if (attempts >= maxAttempts) clearInterval(interval);
         }
-      }, 3000);
+      }, 5000); // Reduced from 3s to 5s — saves ~40% polling requests
       return () => clearInterval(interval);
     }
   }, [searchParams, router, getApi]);
@@ -125,7 +125,22 @@ export default function DashboardPage() {
 
   function startPolling(jobId: string) {
     if (pollers.current[jobId]) return;
+    const MAX_POLL_MS = 10 * 60 * 1000; // 10 minutes timeout
+    const startedAt = Date.now();
     pollers.current[jobId] = setInterval(async () => {
+      // Auto-stop polling after 10 minutes to prevent infinite loops
+      if (Date.now() - startedAt > MAX_POLL_MS) {
+        clearInterval(pollers.current[jobId]);
+        delete pollers.current[jobId];
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.job_id === jobId && (j.status === "pending" || j.status === "processing")
+              ? { ...j, status: "failed" as const, error: "Tiempo de espera agotado (10 min)" }
+              : j
+          )
+        );
+        return;
+      }
       try {
         const client = await getApi();
         const updated = await client.getSummary(jobId);
@@ -141,7 +156,7 @@ export default function DashboardPage() {
         clearInterval(pollers.current[jobId]);
         delete pollers.current[jobId];
       }
-    }, 3000);
+    }, 5000); // 5s interval — saves ~40% polling requests vs original 3s
   }
 
   async function submit() {
