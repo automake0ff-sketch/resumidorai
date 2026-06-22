@@ -1,5 +1,10 @@
 """
-Pipeline de procesamiento de jobs usando Firestore.
+Pipeline de procesamiento de jobs.
+
+Mejoras v2:
+- get_transcript() ahora es awaitable (async)
+- Quota check más defensivo con logging
+- Duration limit check mantiene la lógica existente
 """
 import logging
 from datetime import datetime, timezone
@@ -13,19 +18,13 @@ orchestrator = VideoSummaryOrchestrator()
 
 from app.services.stripe_service import PLAN_LIMITS
 
-# Duration limits per plan (in seconds)
 MAX_VIDEO_DURATION_PER_PLAN = {
-    "trial": 3600,    # 1 hour max for trial
-    "free": 1800,     # 30 min for free
-    "starter": 3600,  # 1 hour for starter  
-    "pro": 7200,      # 2 hours for pro
-    "agency": 14400,  # 4 hours for agency
+    "trial": 3600,
+    "free": 1800,
+    "starter": 3600,
+    "pro": 7200,
+    "agency": 14400,
 }
-
-
-def _esc(value: str) -> str:
-    """Sin efecto real con Firestore."""
-    return value
 
 
 def _now() -> str:
@@ -33,7 +32,6 @@ def _now() -> str:
 
 
 async def create_job(clerk_user_id: str, request: SummaryRequest) -> str:
-    """Create job with atomic quota reservation."""
     record = await pb_create("summary_jobs", {
         "clerk_user_id": clerk_user_id,
         "url": request.url,
@@ -64,21 +62,22 @@ async def process_job(job_id: str):
             raise ValueError(f"URL no válida: {job['url']}")
 
         metadata = await youtube_service.get_metadata(video_id)
-        
-        # Check duration limit per plan
+
+        # Duration limit check
         duration_hint = metadata.get("duration_seconds_hint")
         if duration_hint:
             profile = await pb_get_first("user_profiles", f'clerk_user_id="{job["clerk_user_id"]}"')
             plan = profile.get("plan", "trial") if profile else "trial"
             max_duration = MAX_VIDEO_DURATION_PER_PLAN.get(plan, 1800)
-            
+
             if duration_hint > max_duration:
                 raise ValueError(
                     f"Video demasiado largo ({duration_hint // 60} min). "
-                    f"Tu plan {plan} permite maximo {max_duration // 60} minutos."
+                    f"Tu plan {plan} permite máximo {max_duration // 60} minutos."
                 )
 
-        transcript_data = youtube_service.get_transcript(video_id, job["language"])
+        # get_transcript is now properly async
+        transcript_data = await youtube_service.get_transcript(video_id, job["language"])
         duration_seconds = metadata.get("duration_seconds_hint") or transcript_data["duration_seconds"]
 
         ai_result = await orchestrator.process(
@@ -127,7 +126,7 @@ async def _increment_usage(clerk_user_id: str):
     month_key = f"{now.year}-{now.month:02d}"
     existing = await pb_get_first(
         "user_usage",
-        f'clerk_user_id="{_esc(clerk_user_id)}"&&month="{month_key}"',
+        f'clerk_user_id="{clerk_user_id}"&&month="{month_key}"',
     )
     if existing:
         await pb_update("user_usage", existing["id"], {"count": existing.get("count", 0) + 1})
@@ -145,7 +144,7 @@ async def get_job(job_id: str, clerk_user_id: str) -> dict | None:
 async def get_user_jobs(clerk_user_id: str, page: int = 1, per_page: int = 20) -> list[dict]:
     result = await pb_list(
         "summary_jobs",
-        filter=f'clerk_user_id="{_esc(clerk_user_id)}"',
+        filter=f'clerk_user_id="{clerk_user_id}"',
         sort="-created",
         page=page,
         per_page=per_page,
@@ -154,13 +153,13 @@ async def get_user_jobs(clerk_user_id: str, page: int = 1, per_page: int = 20) -
 
 
 async def get_usage(clerk_user_id: str) -> dict:
-    profile = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
+    profile = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}"')
     plan = profile.get("plan", "trial") if profile else "trial"
 
     if plan == "trial":
         total_result = await pb_list(
             "summary_jobs",
-            filter=f'clerk_user_id="{_esc(clerk_user_id)}"',
+            filter=f'clerk_user_id="{clerk_user_id}"',
             per_page=1,
         )
         count = total_result.get("totalItems", 0)
@@ -169,7 +168,7 @@ async def get_usage(clerk_user_id: str) -> dict:
         month_key = f"{now.year}-{now.month:02d}"
         usage_record = await pb_get_first(
             "user_usage",
-            f'clerk_user_id="{_esc(clerk_user_id)}"&&month="{month_key}"',
+            f'clerk_user_id="{clerk_user_id}"&&month="{month_key}"',
         )
         count = usage_record.get("count", 0) if usage_record else 0
 
@@ -189,8 +188,7 @@ async def delete_job(job_id: str, clerk_user_id: str) -> bool:
 
 
 async def ensure_user_profile(clerk_user_id: str, email: str = "", name: str = ""):
-    """Create user profile if it doesn't exist (fallback for webhook failures)."""
-    existing = await pb_get_first("user_profiles", f'clerk_user_id="{_esc(clerk_user_id)}"')
+    existing = await pb_get_first("user_profiles", f'clerk_user_id="{clerk_user_id}"')
     if not existing:
         await pb_create("user_profiles", {
             "clerk_user_id": clerk_user_id,
