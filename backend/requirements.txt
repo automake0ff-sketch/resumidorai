@@ -14,3 +14,8 @@ svix==1.41.0
 stripe==11.1.0
 python-dotenv==1.0.1
 python-multipart==0.0.12
+slowapi==0.1.9
+limits==3.14.0
+pytest==8.3.5
+pytest-asyncio==0.24.0
+respx==0.21.1
